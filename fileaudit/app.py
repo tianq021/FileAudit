@@ -1,0 +1,201 @@
+from datetime import datetime
+from pathlib import Path
+
+from PySide6.QtWidgets import QFileDialog, QMessageBox, QHBoxLayout, QMainWindow, QStackedWidget, QVBoxLayout, QWidget
+
+from fileaudit.config import load_settings, save_settings
+from fileaudit.reports import export_report_bundle
+from fileaudit.services import ScanWorker
+from fileaudit.ui.components import BottomBar, Sidebar, TopBar
+from fileaudit.ui.pages import (
+    DuplicatePage,
+    ExportPage,
+    FileDetailPage,
+    OverviewPage,
+    RiskPage,
+    ScanConfigPage,
+    SettingsPage,
+)
+from fileaudit.ui.styles import APP_STYLE
+
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+
+        self.setWindowTitle("文件分析器")
+        self.resize(1280, 820)
+        self.setMinimumSize(1100, 700)
+
+        self.current_path = ""
+        self.top_bar = TopBar()
+        self.bottom_bar = BottomBar()
+        self.pages = QStackedWidget()
+        self.scan_worker = None
+        self.scan_result = None
+        self.settings = load_settings()
+
+        self.scan_config_page = ScanConfigPage()
+        self.scan_config_page.folder_selected.connect(self.on_folder_selected)
+        self.scan_config_page.scan_requested.connect(self.on_scan_requested)
+        self.scan_config_page.cancel_requested.connect(self.on_cancel_requested)
+
+        self._setup_pages()
+        self.sidebar = Sidebar(self.pages.setCurrentIndex)
+        self.pages.currentChanged.connect(self.sidebar.set_current_index)
+        self._setup_layout()
+        self.setStyleSheet(APP_STYLE)
+        self.apply_settings_to_pages()
+
+    def _setup_pages(self):
+        self.pages.addWidget(self.scan_config_page)
+        self.overview_page = OverviewPage()
+        self.pages.addWidget(self.overview_page)
+        self.file_detail_page = FileDetailPage()
+        self.pages.addWidget(self.file_detail_page)
+        self.duplicate_page = DuplicatePage()
+        self.pages.addWidget(self.duplicate_page)
+        self.risk_page = RiskPage()
+        self.pages.addWidget(self.risk_page)
+        self.export_page = ExportPage()
+        self.export_page.export_requested.connect(self.on_export_requested)
+        self.pages.addWidget(self.export_page)
+        self.settings_page = SettingsPage()
+        self.settings_page.settings_saved.connect(self.on_settings_saved)
+        self.pages.addWidget(self.settings_page)
+
+    def _setup_layout(self):
+        root = QWidget()
+        self.setCentralWidget(root)
+
+        main_layout = QVBoxLayout(root)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        main_layout.addWidget(self.top_bar)
+
+        body_layout = QHBoxLayout()
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(0)
+        body_layout.addWidget(self.sidebar)
+        body_layout.addWidget(self.pages, 1)
+
+        main_layout.addLayout(body_layout, 1)
+        main_layout.addWidget(self.bottom_bar)
+
+    def on_folder_selected(self, folder: str):
+        self.current_path = folder
+        self.top_bar.set_status("状态：已选择目录")
+        self.sidebar.set_info("已选择目录", scan_path=folder)
+        self.bottom_bar.set_message(f"当前目录：{folder}")
+
+    def on_scan_requested(self):
+        if self.scan_worker and self.scan_worker.isRunning():
+            self.bottom_bar.set_message("扫描正在进行中")
+            return
+
+        if not self.scan_config_page.path_input.text().strip():
+            QMessageBox.warning(self, "扫描配置错误", "请先选择要扫描的目录。")
+            return
+
+        try:
+            options = self.scan_config_page.get_scan_options()
+        except ValueError:
+            QMessageBox.warning(self, "扫描配置错误", "大文件阈值需要填写数字。")
+            return
+
+        self.current_path = str(options.root_path)
+        self.top_bar.set_status("状态：扫描中")
+        self.sidebar.set_info("扫描中", scan_path=self.current_path)
+        self.bottom_bar.set_busy(True)
+        self.bottom_bar.set_message(f"开始扫描：{options.root_path}")
+
+        self.scan_worker = ScanWorker(options)
+        self.scan_worker.progress_changed.connect(self.on_scan_progress)
+        self.scan_worker.scan_finished.connect(self.on_scan_finished)
+        self.scan_worker.scan_failed.connect(self.on_scan_failed)
+        self.scan_worker.finished.connect(self.on_scan_worker_finished)
+        self.scan_worker.finished.connect(self.scan_worker.deleteLater)
+        self.scan_worker.start()
+
+    def on_scan_progress(self, count: int, file_path: str):
+        self.bottom_bar.set_message(f"已扫描 {count:,} 个文件：{file_path}")
+
+    def on_scan_finished(self, result):
+        self.scan_result = result
+        summary = result.summary
+        self.overview_page.update_result(result)
+        self.file_detail_page.update_result(result)
+        self.duplicate_page.update_result(result)
+        self.risk_page.update_result(result)
+        status_text = "已取消" if summary.canceled else "完成"
+        self.top_bar.set_status(f"状态：扫描{status_text}")
+        self.sidebar.set_info(status_text, summary.risk_files, summary.duplicate_files, str(summary.root_path))
+        self.bottom_bar.set_busy(False)
+        self.bottom_bar.set_progress(0 if summary.canceled else 100)
+        self.bottom_bar.set_message(
+            f"扫描{status_text}：文件 {summary.total_files:,}，可疑 {summary.risk_files:,}，"
+            f"重复 {summary.duplicate_files:,}，错误 {summary.error_count:,}"
+        )
+        self.pages.setCurrentIndex(1)
+
+    def on_cancel_requested(self):
+        if not self.scan_worker or not self.scan_worker.isRunning():
+            self.bottom_bar.set_message("当前没有正在运行的扫描")
+            return
+
+        self.scan_worker.cancel()
+        self.top_bar.set_status("状态：正在取消")
+        self.sidebar.set_info("正在取消", scan_path=self.current_path)
+        self.bottom_bar.set_message("正在取消扫描，将保留已经扫描到的文件信息")
+
+    def on_scan_failed(self, message: str):
+        self.top_bar.set_status("状态：扫描失败")
+        self.sidebar.set_info("失败", scan_path=self.current_path)
+        self.bottom_bar.set_busy(False)
+        self.bottom_bar.set_progress(0)
+        self.bottom_bar.set_message(f"扫描失败：{message}")
+        QMessageBox.warning(self, "扫描失败", message)
+
+    def on_scan_worker_finished(self):
+        self.scan_worker = None
+
+    def apply_settings_to_pages(self):
+        self.scan_config_page.apply_settings(self.settings)
+        self.settings_page.apply_settings(self.settings)
+        if self.settings.default_scan_dir:
+            self.current_path = self.settings.default_scan_dir
+            self.sidebar.set_info("已加载设置", scan_path=self.current_path)
+
+    def on_settings_saved(self, settings):
+        self.settings = settings
+        try:
+            save_settings(settings)
+        except OSError as error:
+            QMessageBox.warning(self, "保存失败", str(error))
+            return
+
+        self.apply_settings_to_pages()
+        self.bottom_bar.set_message("设置已保存")
+        QMessageBox.information(self, "设置", "设置已保存，并已同步到扫描配置页。")
+
+    def on_export_requested(self):
+        if not self.scan_result:
+            QMessageBox.warning(self, "无法导出", "请先完成一次扫描，再生成报告。")
+            return
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_dir = Path(self.settings.default_report_dir) if self.settings.default_report_dir else Path.cwd() / "reports"
+        default_dir = base_dir / f"fileaudit_report_{timestamp}"
+        folder = QFileDialog.getExistingDirectory(self, "选择报告输出目录", str(default_dir.parent))
+        if not folder:
+            return
+
+        output_dir = Path(folder) / default_dir.name
+        try:
+            report_path = export_report_bundle(self.scan_result, output_dir)
+        except OSError as error:
+            QMessageBox.warning(self, "导出失败", str(error))
+            return
+
+        self.bottom_bar.set_message(f"报告已生成：{report_path}")
+        QMessageBox.information(self, "导出完成", f"报告已生成：\n{report_path}")
