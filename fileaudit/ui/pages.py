@@ -26,6 +26,9 @@ from fileaudit.config import AppSettings, default_settings
 from fileaudit.ui.components import BarChart, StatCard
 from fileaudit.models import ScanOptions
 
+INITIAL_TABLE_ROWS = 5000
+LOAD_MORE_ROWS = 1000
+
 
 class ScanConfigPage(QWidget):
     folder_selected = Signal(str)
@@ -274,6 +277,7 @@ class FileDetailPage(QWidget):
         self.records = []
         self.sort_column = 3
         self.sort_reverse = True
+        self.visible_limit = INITIAL_TABLE_ROWS
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(12)
@@ -287,15 +291,15 @@ class FileDetailPage(QWidget):
 
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("搜索文件名 / 路径")
-        self.search_input.textChanged.connect(self.apply_filters)
+        self.search_input.textChanged.connect(self.reset_visible_limit_and_apply)
 
         self.risk_filter = QComboBox()
         self.risk_filter.addItems(["全部风险", "高风险", "中风险", "低风险", "正常"])
-        self.risk_filter.currentIndexChanged.connect(self.apply_filters)
+        self.risk_filter.currentIndexChanged.connect(self.reset_visible_limit_and_apply)
 
         self.type_filter = QComboBox()
         self.type_filter.addItems(["全部类型", "文档", "图片", "音视频", "压缩包", "代码", "可执行", "其他"])
-        self.type_filter.currentIndexChanged.connect(self.apply_filters)
+        self.type_filter.currentIndexChanged.connect(self.reset_visible_limit_and_apply)
 
         filter_row.addWidget(self.search_input, 1)
         filter_row.addWidget(self.risk_filter)
@@ -321,19 +325,31 @@ class FileDetailPage(QWidget):
         header.setSortIndicator(self.sort_column, Qt.DescendingOrder)
         header.sectionClicked.connect(self.on_sort_requested)
 
+        self.load_more_btn = QPushButton("查看更多 1000 行")
+        self.load_more_btn.clicked.connect(self.load_more)
+
         layout.addWidget(title)
         layout.addWidget(self.summary_label)
         layout.addLayout(filter_row)
         layout.addWidget(self.table, 1)
+        layout.addWidget(self.load_more_btn)
 
     def update_result(self, result):
         self.records = result.records
+        self.visible_limit = INITIAL_TABLE_ROWS
         self.apply_filters()
 
     def apply_filters(self):
         records = self.filtered_records()
         self.populate_table(records)
-        self.summary_label.setText(f"显示文件：{len(records):,} / {len(self.records):,}")
+        shown = min(len(records), self.visible_limit)
+        limited_text = f"，当前表格显示前 {shown:,} 行" if len(records) > self.visible_limit else ""
+        self.summary_label.setText(f"显示文件：{len(records):,} / {len(self.records):,}{limited_text}")
+        self.load_more_btn.setVisible(len(records) > self.visible_limit)
+
+    def reset_visible_limit_and_apply(self):
+        self.visible_limit = INITIAL_TABLE_ROWS
+        self.apply_filters()
 
     def filtered_records(self):
         keyword = self.search_input.text().strip().lower()
@@ -354,9 +370,10 @@ class FileDetailPage(QWidget):
         return records
 
     def populate_table(self, records):
-        self.table.setRowCount(len(records))
+        visible_records = records[:self.visible_limit]
+        self.table.setRowCount(len(visible_records))
 
-        for row_index, record in enumerate(records):
+        for row_index, record in enumerate(visible_records):
             row_values = [
                 record.name,
                 str(record.path),
@@ -383,10 +400,16 @@ class FileDetailPage(QWidget):
         self.table.horizontalHeader().setSortIndicator(self.sort_column, order)
         self.apply_filters()
 
+    def load_more(self):
+        self.visible_limit += LOAD_MORE_ROWS
+        self.apply_filters()
+
 
 class DuplicatePage(QWidget):
     def __init__(self):
         super().__init__()
+        self.rows = []
+        self.visible_limit = INITIAL_TABLE_ROWS
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(12)
@@ -409,18 +432,27 @@ class DuplicatePage(QWidget):
         configure_path_table(self.table, 2)
         self.table.setSortingEnabled(False)
 
+        self.load_more_btn = QPushButton("查看更多 1000 行")
+        self.load_more_btn.clicked.connect(self.load_more)
+
         layout.addWidget(title)
         layout.addWidget(self.summary_label)
         layout.addWidget(self.table, 1)
+        layout.addWidget(self.load_more_btn)
 
     def update_result(self, result):
-        rows = []
+        self.last_result = result
+        self.visible_limit = INITIAL_TABLE_ROWS
+        self.rows = []
         for group_index, group in enumerate(result.duplicate_groups, start=1):
             for record in group.files:
-                rows.append((group_index, group, record))
+                self.rows.append((group_index, group, record))
+        self.populate_table(result)
 
-        self.table.setRowCount(len(rows))
-        for row_index, (group_index, group, record) in enumerate(rows):
+    def populate_table(self, result):
+        visible_rows = self.rows[:self.visible_limit]
+        self.table.setRowCount(len(visible_rows))
+        for row_index, (group_index, group, record) in enumerate(visible_rows):
             row_values = [
                 str(group_index),
                 record.name,
@@ -438,12 +470,22 @@ class DuplicatePage(QWidget):
             f"重复文件组：{len(result.duplicate_groups):,}，"
             f"重复文件：{result.summary.duplicate_files:,}，"
             f"可节省空间：{format_size(result.summary.duplicate_wasted_size)}"
+            + (f"，当前表格显示前 {len(visible_rows):,} 行" if len(self.rows) > self.visible_limit else "")
         )
+        self.load_more_btn.setVisible(len(self.rows) > self.visible_limit)
+
+    def load_more(self):
+        if not hasattr(self, "last_result"):
+            return
+        self.visible_limit += LOAD_MORE_ROWS
+        self.populate_table(self.last_result)
 
 
 class RiskPage(QWidget):
     def __init__(self):
         super().__init__()
+        self.records = []
+        self.visible_limit = INITIAL_TABLE_ROWS
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(12)
@@ -467,16 +509,25 @@ class RiskPage(QWidget):
         configure_path_table(self.table, 2)
         self.table.setSortingEnabled(False)
 
+        self.load_more_btn = QPushButton("查看更多 1000 行")
+        self.load_more_btn.clicked.connect(self.load_more)
+
         layout.addWidget(title)
         layout.addWidget(self.summary_label)
         layout.addWidget(self.table, 1)
+        layout.addWidget(self.load_more_btn)
 
     def update_result(self, result):
-        records = [record for record in result.records if record.risk_level != "normal"]
-        records.sort(key=lambda record: risk_sort_key(record.risk_level))
+        self.last_result = result
+        self.visible_limit = INITIAL_TABLE_ROWS
+        self.records = [record for record in result.records if record.risk_level != "normal"]
+        self.records.sort(key=lambda record: risk_sort_key(record.risk_level))
+        self.populate_table(result)
 
-        self.table.setRowCount(len(records))
-        for row_index, record in enumerate(records):
+    def populate_table(self, result):
+        visible_records = self.records[:self.visible_limit]
+        self.table.setRowCount(len(visible_records))
+        for row_index, record in enumerate(visible_records):
             row_values = [
                 format_risk_level(record.risk_level),
                 record.name,
@@ -495,9 +546,17 @@ class RiskPage(QWidget):
         medium_count = result.summary.risk_counts.get("medium", 0)
         low_count = result.summary.risk_counts.get("low", 0)
         self.summary_label.setText(
-            f"可疑文件：{len(records):,}，"
+            f"可疑文件：{len(self.records):,}，"
             f"高风险：{high_count:,}，中风险：{medium_count:,}，低风险：{low_count:,}"
+            + (f"，当前表格显示前 {len(visible_records):,} 行" if len(self.records) > self.visible_limit else "")
         )
+        self.load_more_btn.setVisible(len(self.records) > self.visible_limit)
+
+    def load_more(self):
+        if not hasattr(self, "last_result"):
+            return
+        self.visible_limit += LOAD_MORE_ROWS
+        self.populate_table(self.last_result)
 
 
 class ExportPage(QWidget):

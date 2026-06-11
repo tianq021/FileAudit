@@ -9,7 +9,7 @@ from fileaudit.models import ScanOptions
 
 
 class ScanWorker(QThread):
-    progress_changed = Signal(int, str)
+    progress_changed = Signal(str, int, int, str)
     scan_finished = Signal(object)
     scan_failed = Signal(str)
 
@@ -25,7 +25,7 @@ class ScanWorker(QThread):
         try:
             result = scan_directory(
                 self.options,
-                progress_callback=self._emit_progress,
+                stage_progress_callback=self._emit_progress,
                 should_cancel=lambda: self._cancel_requested,
             )
         except Exception as error:
@@ -34,5 +34,5 @@ class ScanWorker(QThread):
 
         self.scan_finished.emit(result)
 
-    def _emit_progress(self, count: int, file_path: Path) -> None:
-        self.progress_changed.emit(count, str(file_path))
+    def _emit_progress(self, stage: str, count: int, total: int, file_path: Path) -> None:
+        self.progress_changed.emit(stage, count, total, str(file_path))

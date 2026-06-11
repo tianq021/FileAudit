@@ -11,15 +11,21 @@ from typing import Callable
 from fileaudit.models import DuplicateGroup, FileRecord, ScanError, ScanOptions, ScanResult, ScanSummary
 
 ProgressCallback = Callable[[int, Path], None]
+StageProgressCallback = Callable[[str, int, int, Path], None]
 CancelCallback = Callable[[], bool]
 
 HIGH_RISK_REASONS = {"suspicious extension", "double extension"}
 MEDIUM_RISK_REASONS = {"hidden file", "time anomaly", "long path"}
 
 
+class ScanCanceled(Exception):
+    pass
+
+
 def scan_directory(
     options: ScanOptions,
     progress_callback: ProgressCallback | None = None,
+    stage_progress_callback: StageProgressCallback | None = None,
     should_cancel: CancelCallback | None = None,
 ) -> ScanResult:
     root_path = Path(options.root_path).expanduser().resolve()
@@ -61,12 +67,14 @@ def scan_directory(
             records.append(record)
             if progress_callback:
                 progress_callback(len(records), file_path)
+            if stage_progress_callback:
+                stage_progress_callback("scan", len(records), 0, file_path)
 
         if canceled:
             break
 
     duplicate_groups = (
-        _find_duplicates(records, options, errors, should_cancel) if options.calculate_hash else []
+        _find_duplicates(records, options, errors, should_cancel, stage_progress_callback) if options.calculate_hash else []
     )
     if should_cancel and should_cancel():
         canceled = True
@@ -163,6 +171,7 @@ def _find_duplicates(
     options: ScanOptions,
     errors: list[ScanError],
     should_cancel: CancelCallback | None = None,
+    stage_progress_callback: StageProgressCallback | None = None,
 ) -> list[DuplicateGroup]:
     by_size: dict[int, list[FileRecord]] = defaultdict(list)
     for record in records:
@@ -170,6 +179,15 @@ def _find_duplicates(
             by_size[record.size].append(record)
 
     duplicate_groups: list[DuplicateGroup] = []
+    hash_candidates = [
+        record
+        for same_size_records in by_size.values()
+        if len(same_size_records) > 1
+        for record in same_size_records
+    ]
+    total_hash_candidates = len(hash_candidates)
+    hashed_count = 0
+
     for size, same_size_records in by_size.items():
         if should_cancel and should_cancel():
             break
@@ -181,10 +199,15 @@ def _find_duplicates(
             if should_cancel and should_cancel():
                 break
             try:
-                record.hash_value = _hash_file(record.path, options.hash_algorithm)
+                record.hash_value = _hash_file(record.path, options.hash_algorithm, should_cancel)
+            except ScanCanceled:
+                return duplicate_groups
             except OSError as error:
                 errors.append(ScanError(record.path, str(error)))
                 continue
+            hashed_count += 1
+            if stage_progress_callback:
+                stage_progress_callback("hash", hashed_count, total_hash_candidates, record.path)
             by_hash[record.hash_value].append(record)
 
         for hash_value, same_hash_records in by_hash.items():
@@ -195,10 +218,12 @@ def _find_duplicates(
     return duplicate_groups
 
 
-def _hash_file(file_path: Path, algorithm: str) -> str:
+def _hash_file(file_path: Path, algorithm: str, should_cancel: CancelCallback | None = None) -> str:
     digest = hashlib.new(_normalize_hash_algorithm(algorithm))
     with file_path.open("rb") as file:
         for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            if should_cancel and should_cancel():
+                raise ScanCanceled()
             digest.update(chunk)
     return digest.hexdigest()
 

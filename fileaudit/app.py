@@ -117,8 +117,13 @@ class MainWindow(QMainWindow):
         self.scan_worker.finished.connect(self.scan_worker.deleteLater)
         self.scan_worker.start()
 
-    def on_scan_progress(self, count: int, file_path: str):
-        self.bottom_bar.set_message(f"已扫描 {count:,} 个文件：{file_path}")
+    def on_scan_progress(self, stage: str, count: int, total: int, file_path: str):
+        if stage == "hash":
+            total_text = f" / {total:,}" if total else ""
+            self.bottom_bar.set_message(f"正在计算重复文件 Hash：{count:,}{total_text} - {file_path}")
+            return
+
+        self.bottom_bar.set_message(f"正在扫描文件：{count:,} - {file_path}")
 
     def on_scan_finished(self, result):
         self.scan_result = result
