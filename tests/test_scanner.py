@@ -6,7 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from fileaudit.config import default_settings
-from fileaudit.core.scanner import _format_scan_error, scan_directory
+from fileaudit.core.scanner import _format_scan_error, _raise_if_timed_out, scan_directory
 from fileaudit.models import DEFAULT_SKIP_DIRS, ScanError, ScanOptions, ScanResult
 from fileaudit.reports.exporter import export_report_bundle
 
@@ -168,6 +168,14 @@ class ScannerTests(unittest.TestCase):
         self.assertIn("无权限访问", message)
         self.assertIn("跳过目录", message)
 
+    def test_timed_out_operations_are_displayed_as_skipped_files(self):
+        with self.assertRaises(OSError) as context:
+            _raise_if_timed_out(0, 1, "测试操作")
+
+        message = _format_scan_error(context.exception)
+        self.assertIn("超过 1 秒", message)
+        self.assertIn("继续扫描", message)
+
     def test_include_only_rules_filter_by_extension_keyword_and_type(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -279,6 +287,9 @@ class ScannerTests(unittest.TestCase):
 
     def test_default_modified_time_month_setting_is_three(self):
         self.assertEqual(default_settings().modified_time_months, 3)
+
+    def test_default_file_timeout_setting_is_fifteen_seconds(self):
+        self.assertEqual(default_settings().file_timeout_seconds, 15)
 
 
 if __name__ == "__main__":

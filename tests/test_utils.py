@@ -42,6 +42,7 @@ class UtilsTests(unittest.TestCase):
         self.assertEqual(format_size(1024), "1.0 KB")
         self.assertEqual(format_risk_reasons(["script file", "long path"]), "脚本文件，路径过长")
         self.assertEqual(format_skip_reasons({"skip extension": 2}), "扩展名 2")
+        self.assertEqual(format_skip_reasons({"skip slow file": 1, "skip slow hash": 2}), "慢文件 1，慢 Hash 2")
         self.assertLess(risk_sort_key("high"), risk_sort_key("low"))
 
     def test_classifies_file_types_once_for_all_callers(self):

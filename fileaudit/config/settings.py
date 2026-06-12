@@ -19,6 +19,7 @@ class AppSettings:
     hash_algorithm: str = "SHA256"
     big_file_threshold_mb: int = 100
     path_length_threshold: int = 180
+    file_timeout_seconds: int = 15
     modified_time_months: int = 3
     detect_suspicious_extensions: bool = True
     detect_double_extensions: bool = True

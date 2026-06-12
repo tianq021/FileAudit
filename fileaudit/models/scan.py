@@ -21,6 +21,7 @@ class ScanOptions:
     hash_algorithm: str = "sha256"
     big_file_threshold_mb: int = 100
     path_length_threshold: int = 180
+    file_timeout_seconds: int = 15
     detect_suspicious_extensions: bool = True
     detect_double_extensions: bool = True
     detect_hidden_files: bool = True

@@ -65,6 +65,7 @@ class ScanConfigPage(QWidget):
         self.path_input = QLineEdit()
         self.big_file_input = QLineEdit("100")
         self.path_length_input = QLineEdit("180")
+        self.file_timeout_input = QLineEdit("15")
         self.hash_select = QComboBox()
         self.ignored_dirs_edit = QTextEdit()
         self.suspicious_extensions_edit = QTextEdit()
@@ -169,10 +170,12 @@ class ScanConfigPage(QWidget):
         setting_row = QHBoxLayout()
         self.big_file_input.setFixedWidth(90)
         self.path_length_input.setFixedWidth(90)
+        self.file_timeout_input.setFixedWidth(90)
         self.skip_large_files_input.setFixedWidth(90)
         int_validator = QIntValidator(0, 2147483647, self)
         self.big_file_input.setValidator(int_validator)
         self.path_length_input.setValidator(int_validator)
+        self.file_timeout_input.setValidator(int_validator)
         self.skip_large_files_input.setValidator(int_validator)
         self.hash_select.addItems(["SHA256", "MD5", "SHA1(不推荐)"])
 
@@ -183,6 +186,10 @@ class ScanConfigPage(QWidget):
         setting_row.addWidget(QLabel("路径过长阈值："))
         setting_row.addWidget(self.path_length_input)
         setting_row.addWidget(QLabel("字符"))
+        setting_row.addSpacing(30)
+        setting_row.addWidget(QLabel("单文件超时："))
+        setting_row.addWidget(self.file_timeout_input)
+        setting_row.addWidget(QLabel("秒"))
         setting_row.addSpacing(30)
         setting_row.addWidget(QLabel("Hash 算法："))
         setting_row.addWidget(self.hash_select)
@@ -304,6 +311,7 @@ class ScanConfigPage(QWidget):
     def get_scan_options(self) -> ScanOptions:
         threshold_mb = parse_positive_int(self.big_file_input.text(), 100, "大文件阈值")
         path_length_threshold = parse_positive_int(self.path_length_input.text(), 180, "路径过长阈值")
+        file_timeout_seconds = parse_positive_int(self.file_timeout_input.text(), 15, "单文件超时")
         skip_large_files_mb = parse_positive_int(self.skip_large_files_input.text(), 0, "跳过大文件阈值")
         return ScanOptions(
             root_path=Path(self.path_input.text().strip()),
@@ -312,6 +320,7 @@ class ScanConfigPage(QWidget):
             hash_algorithm=self.hash_select.currentText(),
             big_file_threshold_mb=threshold_mb,
             path_length_threshold=path_length_threshold,
+            file_timeout_seconds=file_timeout_seconds,
             detect_suspicious_extensions=self.option_checks["detect_suspicious_extensions"].isChecked(),
             detect_double_extensions=self.option_checks["detect_double_extensions"].isChecked(),
             detect_hidden_files=self.option_checks["detect_hidden_files"].isChecked(),
@@ -341,6 +350,7 @@ class ScanConfigPage(QWidget):
         self.path_input.setToolTip(settings.default_scan_dir)
         self.big_file_input.setText(str(settings.big_file_threshold_mb))
         self.path_length_input.setText(str(settings.path_length_threshold))
+        self.file_timeout_input.setText(str(settings.file_timeout_seconds))
         self.hash_select.setCurrentText(settings.hash_algorithm)
         self.option_checks["recursive"].setChecked(settings.recursive)
         self.option_checks["calculate_hash"].setChecked(settings.calculate_hash)
@@ -959,6 +969,7 @@ class SettingsPage(QWidget):
         self.report_dir_input = QLineEdit()
         self.big_file_input = QLineEdit()
         self.path_length_input = QLineEdit()
+        self.file_timeout_input = QLineEdit()
         self.modified_time_months_input = QLineEdit()
         self.hash_select = QComboBox()
         self.option_checks = {}
@@ -1014,12 +1025,14 @@ class SettingsPage(QWidget):
         self.hash_select.addItems(["SHA256", "MD5", "SHA1(不推荐)"])
         self.big_file_input.setFixedWidth(100)
         self.path_length_input.setFixedWidth(100)
+        self.file_timeout_input.setFixedWidth(100)
         self.modified_time_months_input.setFixedWidth(100)
         self.skip_large_files_input.setFixedWidth(100)
         int_validator = QIntValidator(0, 2147483647, self)
         month_validator = QIntValidator(1, 120, self)
         self.big_file_input.setValidator(int_validator)
         self.path_length_input.setValidator(int_validator)
+        self.file_timeout_input.setValidator(int_validator)
         self.modified_time_months_input.setValidator(month_validator)
         self.skip_large_files_input.setValidator(int_validator)
         scan_layout.addWidget(QLabel("大文件阈值："), 0, 0)
@@ -1030,9 +1043,12 @@ class SettingsPage(QWidget):
         scan_layout.addWidget(QLabel("字符"), 0, 5)
         scan_layout.addWidget(QLabel("Hash 算法："), 0, 6)
         scan_layout.addWidget(self.hash_select, 0, 7)
-        scan_layout.addWidget(QLabel("修改时间分类："), 1, 0)
-        scan_layout.addWidget(self.modified_time_months_input, 1, 1)
-        scan_layout.addWidget(QLabel("个月内"), 1, 2)
+        scan_layout.addWidget(QLabel("单文件超时："), 1, 0)
+        scan_layout.addWidget(self.file_timeout_input, 1, 1)
+        scan_layout.addWidget(QLabel("秒（0 表示关闭）"), 1, 2)
+        scan_layout.addWidget(QLabel("修改时间分类："), 1, 3)
+        scan_layout.addWidget(self.modified_time_months_input, 1, 4)
+        scan_layout.addWidget(QLabel("个月内"), 1, 5)
 
         options = [
             ("recursive", "递归扫描子目录"),
@@ -1157,6 +1173,7 @@ class SettingsPage(QWidget):
         self.report_dir_input.setToolTip(settings.default_report_dir)
         self.big_file_input.setText(str(settings.big_file_threshold_mb))
         self.path_length_input.setText(str(settings.path_length_threshold))
+        self.file_timeout_input.setText(str(settings.file_timeout_seconds))
         self.modified_time_months_input.setText(str(settings.modified_time_months))
         self.hash_select.setCurrentText(settings.hash_algorithm)
         for key in self.option_checks:
@@ -1187,6 +1204,7 @@ class SettingsPage(QWidget):
             hash_algorithm=self.hash_select.currentText(),
             big_file_threshold_mb=parse_positive_int(self.big_file_input.text(), 100, "大文件阈值"),
             path_length_threshold=parse_positive_int(self.path_length_input.text(), 180, "路径过长阈值"),
+            file_timeout_seconds=parse_positive_int(self.file_timeout_input.text(), 15, "单文件超时"),
             modified_time_months=parse_min_int(self.modified_time_months_input.text(), 3, "修改时间分类月份", 1),
             detect_suspicious_extensions=self.option_checks["detect_suspicious_extensions"].isChecked(),
             detect_double_extensions=self.option_checks["detect_double_extensions"].isChecked(),

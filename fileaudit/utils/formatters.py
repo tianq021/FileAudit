@@ -29,6 +29,8 @@ SKIP_REASON_NAMES = {
     "skip hidden file": "隐藏文件",
     "skip large file": "大文件",
     "skip include unmatched": "未匹配只扫描规则",
+    "skip slow file": "慢文件",
+    "skip slow hash": "慢 Hash",
 }
 
 RISK_LEVEL_ORDER = {

@@ -122,6 +122,7 @@ FileAudit/
 - 默认扫描目录。
 - 默认报告目录。
 - 阈值和 Hash 算法。
+- 单文件处理超时阈值。
 - 修改时间分布月份阈值。
 - 检测开关。
 - 忽略目录。
@@ -237,6 +238,7 @@ ExportPage
 - 白名单扩展名只影响“可疑扩展名”和“双扩展名”规则，不会阻止文件被扫描。
 - “只扫描规则”只在开启 `include_only_matched` 后生效。
 - 跳过规则和只扫描规则冲突时，由 `include_conflict_policy` 决定谁优先。
+- 单文件超时保护是协作式保护：文件元数据读取和 Hash 分块读取返回后检查耗时，超时则记录错误并继续扫描后续文件。
 - 表格排序避免使用自定义 `QTableWidgetItem.__lt__`，曾触发 PySide6 原生崩溃；现在采用 Python 先排序数据再重绘表格。
 - `fileaudit/reports/` 是源码目录，`.gitignore` 只忽略根目录 `/reports/` 生成物。
 - 中文 Markdown 和界面文案保持 UTF-8 编码。

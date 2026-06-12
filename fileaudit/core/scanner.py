@@ -6,6 +6,7 @@ import stat
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
+from time import monotonic
 from typing import Callable
 
 from fileaudit.models import DuplicateGroup, FileRecord, ScanError, ScanOptions, ScanResult, ScanSummary
@@ -40,6 +41,10 @@ DECOY_EXTENSIONS = {
 
 
 class ScanCanceled(Exception):
+    pass
+
+
+class ScanOperationTimeout(OSError):
     pass
 
 
@@ -94,6 +99,8 @@ def scan_directory(
                 record = _build_record(file_path, options)
             except OSError as error:
                 errors.append(ScanError(file_path, _format_scan_error(error)))
+                if _is_timeout_error(error):
+                    skip_reasons["skip slow file"] += 1
                 continue
 
             records.append(record)
@@ -106,7 +113,9 @@ def scan_directory(
             break
 
     duplicate_groups = (
-        _find_duplicates(records, options, errors, should_cancel, stage_progress_callback) if options.calculate_hash else []
+        _find_duplicates(records, options, errors, skip_reasons, should_cancel, stage_progress_callback)
+        if options.calculate_hash
+        else []
     )
     if should_cancel and should_cancel():
         canceled = True
@@ -141,7 +150,9 @@ def _record_walk_error(error: OSError, errors: list[ScanError]) -> None:
 
 
 def _build_record(file_path: Path, options: ScanOptions) -> FileRecord:
+    started_at = monotonic()
     file_stat = file_path.stat()
+    _raise_if_timed_out(started_at, options.file_timeout_seconds, "读取文件元数据")
     record = FileRecord(
         path=file_path,
         name=file_path.name,
@@ -154,6 +165,7 @@ def _build_record(file_path: Path, options: ScanOptions) -> FileRecord:
         is_hidden=_is_hidden(file_path),
     )
     _apply_risk_rules(record, options)
+    _raise_if_timed_out(started_at, options.file_timeout_seconds, "分析文件元数据")
     return record
 
 
@@ -286,6 +298,7 @@ def _find_duplicates(
     records: list[FileRecord],
     options: ScanOptions,
     errors: list[ScanError],
+    skip_reasons: Counter[str],
     should_cancel: CancelCallback | None = None,
     stage_progress_callback: StageProgressCallback | None = None,
 ) -> list[DuplicateGroup]:
@@ -315,11 +328,18 @@ def _find_duplicates(
             if should_cancel and should_cancel():
                 break
             try:
-                record.hash_value = _hash_file(record.path, options.hash_algorithm, should_cancel)
+                record.hash_value = _hash_file(
+                    record.path,
+                    options.hash_algorithm,
+                    should_cancel,
+                    options.file_timeout_seconds,
+                )
             except ScanCanceled:
                 return duplicate_groups
             except OSError as error:
                 errors.append(ScanError(record.path, _format_scan_error(error)))
+                if _is_timeout_error(error):
+                    skip_reasons["skip slow hash"] += 1
                 continue
             hashed_count += 1
             if stage_progress_callback:
@@ -334,12 +354,19 @@ def _find_duplicates(
     return duplicate_groups
 
 
-def _hash_file(file_path: Path, algorithm: str, should_cancel: CancelCallback | None = None) -> str:
+def _hash_file(
+    file_path: Path,
+    algorithm: str,
+    should_cancel: CancelCallback | None = None,
+    timeout_seconds: int = 0,
+) -> str:
+    started_at = monotonic()
     digest = hashlib.new(_normalize_hash_algorithm(algorithm))
     with file_path.open("rb") as file:
         for chunk in iter(lambda: file.read(1024 * 1024), b""):
             if should_cancel and should_cancel():
                 raise ScanCanceled()
+            _raise_if_timed_out(started_at, timeout_seconds, "计算文件 Hash")
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -356,10 +383,24 @@ def _normalize_hash_algorithm(algorithm: str) -> str:
 
 
 def _format_scan_error(error: OSError) -> str:
+    if _is_timeout_error(error):
+        return str(error)
     winerror = getattr(error, "winerror", None)
     if isinstance(error, PermissionError) or winerror == 5:
         return "无权限访问。Windows 受保护目录或系统文件通常会出现这个提示，可以在跳过目录中排除。"
     return str(error)
+
+
+def _raise_if_timed_out(started_at: float, timeout_seconds: int, action: str) -> None:
+    if timeout_seconds <= 0:
+        return
+    elapsed = monotonic() - started_at
+    if elapsed > timeout_seconds:
+        raise ScanOperationTimeout(f"{action}超过 {timeout_seconds} 秒，已跳过该文件并继续扫描。")
+
+
+def _is_timeout_error(error: OSError) -> bool:
+    return isinstance(error, ScanOperationTimeout)
 
 
 def _build_summary(
