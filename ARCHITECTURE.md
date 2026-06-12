@@ -12,13 +12,13 @@ FileAudit/
 │  ├─ config/
 │  │  └─ settings.py          # AppSettings、默认设置、JSON 读写
 │  ├─ core/
-│  │  └─ scanner.py           # 目录扫描、跳过规则、只扫描规则、风险规则、Hash、重复文件检测
+│  │  └─ scanner.py           # 预检查、目录扫描、跳过规则、只扫描规则、风险规则、Hash、重复文件检测
 │  ├─ models/
-│  │  └─ scan.py              # ScanOptions、FileRecord、ScanResult 等数据结构
+│  │  └─ scan.py              # ScanOptions、FileRecord、ScanPreview、ScanResult 等数据结构
 │  ├─ reports/
 │  │  └─ exporter.py          # CSV 数据包和 HTML 图表报告导出
 │  ├─ services/
-│  │  └─ scan_worker.py       # QThread 后台扫描任务
+│  │  └─ scan_worker.py       # QThread 后台预检查和扫描任务
 │  ├─ ui/
 │  │  ├─ components.py        # 顶部栏、侧边栏、底部栏、统计卡片、条形图、环形图
 │  │  ├─ pages.py             # 扫描配置、概览、明细、重复、风险、错误、导出、设置页面
@@ -66,6 +66,7 @@ FileAudit/
 - 应用忽略目录和跳过目录规则。
 - 在创建 `FileRecord` 前应用文件跳过规则。
 - 应用“只扫描匹配规则”；文件级跳过规则固定优先。
+- 提供轻量 `preview_scan()`，在正式扫描前估算文件数、目录数、总大小、跳过统计和 Hash 候选数量。
 - 构造文件记录。
 - 判断风险规则。
 - 先按大小分组，再计算 Hash，识别重复文件。
@@ -80,16 +81,20 @@ FileAudit/
 - `FileRecord`
 - `DuplicateGroup`
 - `ScanError`
+- `ScanPreview`
 - `ScanSummary`
 - `ScanResult`
 
-`ScanOptions` 现在同时包含检测规则、跳过规则、只扫描规则和 Hash 选项。`ScanSummary` 包含文件/目录统计、风险统计、重复文件统计、错误统计和跳过统计。
+`ScanOptions` 现在同时包含检测规则、跳过规则、只扫描规则和 Hash 选项。`ScanPreview` 用于扫描前预检查，只记录预计文件、目录、大小、跳过、错误和 Hash 候选统计。`ScanSummary` 包含文件/目录统计、风险统计、重复文件统计、错误统计和跳过统计。
 
 ### `fileaudit/services/scan_worker.py`
 
 连接 UI 和扫描核心。用 `QThread` 在后台执行扫描，通过 Signal 通知：
 
+- 预检查进度。
+- 预检查完成或失败。
 - 扫描进度。
+- 扫描详细进度，包括文件数、目录数、跳过数、错误数和当前路径。
 - Hash 阶段进度。
 - 扫描完成。
 - 扫描失败。
@@ -149,7 +154,7 @@ FileAudit/
 - `ExportPage`
 - `SettingsPage`
 
-页面层负责展示、收集用户输入和发出 Signal，不直接执行耗时扫描。
+页面层负责展示、收集用户输入和发出 Signal，不直接执行耗时扫描。文件明细、重复文件、可疑文件和扫描错误页使用 `QTableView + QAbstractTableModel` 显示结果，避免为大结果集一次性创建大量 `QTableWidgetItem`。可疑文件页还会展示风险原因说明和建议处理动作，文案来自 `fileaudit/utils/formatters.py`。
 
 ### `fileaudit/ui/components.py`
 
@@ -164,6 +169,17 @@ FileAudit/
 
 ## 关键流程
 
+### 预检查流程
+
+```text
+ScanConfigPage 预检查按钮
+  -> MainWindow.on_preview_requested
+  -> PreviewWorker
+  -> core.preview_scan
+  -> ScanPreview
+  -> BottomBar 显示预计文件、目录、大小、跳过、错误和 Hash 候选
+```
+
 ### 扫描流程
 
 ```text
@@ -173,6 +189,18 @@ ScanConfigPage
   -> core.scan_directory
   -> ScanResult
   -> OverviewPage/FileDetailPage/DuplicatePage/RiskPage/ErrorPage
+```
+
+扫描过程中 `ScanWorker.detail_progress_changed` 会把阶段、当前数、总数、目录数、跳过数、错误数和当前路径传给主窗口，底部状态栏据此显示大目录扫描反馈。
+
+### 规则校验流程
+
+```text
+ScanConfigPage / SettingsPage 控件变更
+  -> update_rule_feedback
+  -> get_scan_options / current_settings
+  -> validate_detection_skip_conflicts
+  -> 规则状态：正常 / 有冲突
 ```
 
 ### 跳过和只扫描流程
@@ -238,8 +266,10 @@ ExportPage
 - 白名单扩展名只影响“可疑扩展名”和“双扩展名”规则，不会阻止文件被扫描。
 - “只扫描规则”只在开启 `include_only_matched` 后生效。
 - 跳过规则固定优先于只扫描规则，避免只扫描配置覆盖隐私跳过规则。
+- 实时规则状态提示复用最终保存/扫描前的校验逻辑，避免页面提示和实际拦截规则分叉。
+- 预检查必须复用正式扫描的跳过和只扫描判断，但不能生成完整 `FileRecord`，也不能计算 Hash。
 - 单文件超时保护是协作式保护：文件元数据读取和 Hash 分块读取返回后检查耗时，超时则记录错误并继续扫描后续文件。
-- 表格排序避免使用自定义 `QTableWidgetItem.__lt__`，曾触发 PySide6 原生崩溃；现在采用 Python 先排序数据再重绘表格。
+- 表格排序避免使用自定义 `QTableWidgetItem.__lt__`，曾触发 PySide6 原生崩溃；现在采用 Python 先排序数据，再由 `QAbstractTableModel` 提供显示。
 - `fileaudit/reports/` 是源码目录，`.gitignore` 只忽略根目录 `/reports/` 生成物。
 - 中文 Markdown 和界面文案保持 UTF-8 编码。
 
@@ -254,8 +284,8 @@ ExportPage
 当前处理：
 
 - `scan_directory()` 支持阶段进度回调。
-- `ScanWorker.progress_changed` 会传递阶段、当前数、总数和当前路径。
-- UI 区分显示“正在扫描文件”和“正在计算重复文件 Hash”。
+- `ScanWorker.detail_progress_changed` 会传递阶段、当前数、总数、目录数、跳过数、错误数和当前路径。
+- UI 区分显示“正在扫描”和“正在计算重复文件 Hash”，并持续显示目录、跳过和错误数量。
 - `_hash_file()` 在读取大文件分块时检查取消请求。
 
 ### 大结果集 UI 内存过高
@@ -264,15 +294,15 @@ ExportPage
 
 当前处理：
 
-- 扫描结果完整保留在 `ScanResult` 中。
-- UI 表格只先渲染前 `INITIAL_TABLE_ROWS = 5000` 行。
-- 用户可以通过“查看更多 1000 行”继续加载。
+- 扫描结果完整保留在 `ScanResult` 中，用于统计、筛选和导出。
+- UI 表格改为 `QTableView + QAbstractTableModel`。
+- 视图按可见区域向模型读取行数据，不再一次性创建大量 `QTableWidgetItem`。
 - 导出报告仍使用完整扫描结果。
 
 后续建议：
 
-- 改为分页表格。
-- 或改为 `QTableView + QAbstractTableModel` 虚拟模型，按需读取显示行。
+- 把完整结果落到 SQLite 或分页数据源。
+- 进一步把筛选、排序和导出迁移到分页数据源上。
 
 ### PySide6 表格排序崩溃
 
@@ -282,7 +312,7 @@ ExportPage
 
 - 禁用 Qt 内置排序。
 - 文件明细页维护 `sort_column` 和 `sort_reverse`。
-- 点击表头后先排序 Python 数据列表，再重绘表格。
+- 点击表头后先排序 Python 数据列表，再重置表格模型。
 
 ### 导出选项和真实行为不一致
 
@@ -301,6 +331,6 @@ ExportPage
 ## 后续架构建议
 
 - 将 `fileaudit/ui/pages.py` 按页面拆分，避免继续膨胀。
-- 大结果集表格改为虚拟模型。
+- 超大扫描结果改为分页数据源或 SQLite 存储。
 - 增加 Excel 多 Sheet 导出模块。
 - 增加扫描历史保存和两次扫描结果对比。

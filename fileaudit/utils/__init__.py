@@ -16,6 +16,8 @@ from fileaudit.utils.distributions import (
 from fileaudit.utils.file_types import classify_file_type
 from fileaudit.utils.formatters import (
     format_datetime,
+    format_risk_actions,
+    format_risk_explanations,
     format_risk_level,
     format_risk_reasons,
     format_size,
@@ -40,6 +42,8 @@ __all__ = [
     "build_skip_reason_distribution",
     "classify_file_type",
     "format_datetime",
+    "format_risk_actions",
+    "format_risk_explanations",
     "format_risk_level",
     "format_risk_reasons",
     "format_size",

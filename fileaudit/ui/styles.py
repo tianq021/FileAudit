@@ -157,7 +157,7 @@ APP_STYLE = """
         background-color: #374151;
     }
 
-    QTableWidget {
+    QTableWidget, QTableView {
         background-color: #111827;
         color: #E5E7EB;
         gridline-color: #374151;

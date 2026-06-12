@@ -14,6 +14,8 @@ from fileaudit.utils import (
     build_risk_distribution,
     build_risk_directory_distribution,
     classify_file_type,
+    format_risk_actions,
+    format_risk_explanations,
     format_risk_reasons,
     format_size,
     format_skip_reasons,
@@ -41,6 +43,8 @@ class UtilsTests(unittest.TestCase):
     def test_formats_common_display_values(self):
         self.assertEqual(format_size(1024), "1.0 KB")
         self.assertEqual(format_risk_reasons(["script file", "long path"]), "脚本文件，路径过长")
+        self.assertIn("脚本文件可以批量执行命令", format_risk_explanations(["script file"]))
+        self.assertIn("不要双击执行", format_risk_actions(["script file"]))
         self.assertEqual(format_skip_reasons({"skip extension": 2}), "扩展名 2")
         self.assertEqual(format_skip_reasons({"skip slow file": 1, "skip slow hash": 2}), "慢文件 1，慢 Hash 2")
         self.assertLess(risk_sort_key("high"), risk_sort_key("low"))

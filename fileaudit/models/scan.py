@@ -117,6 +117,20 @@ class ScanSummary:
 
 
 @dataclass
+class ScanPreview:
+    root_path: Path
+    total_files: int = 0
+    total_dirs: int = 0
+    total_size: int = 0
+    skipped_files: int = 0
+    skipped_dirs: int = 0
+    skip_reasons: dict[str, int] = field(default_factory=dict)
+    error_count: int = 0
+    hash_candidate_files: int = 0
+    canceled: bool = False
+
+
+@dataclass
 class ScanResult:
     records: list[FileRecord]
     duplicate_groups: list[DuplicateGroup]

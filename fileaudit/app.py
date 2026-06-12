@@ -5,7 +5,8 @@ from PySide6.QtWidgets import QFileDialog, QMessageBox, QHBoxLayout, QMainWindow
 
 from fileaudit.config import load_settings, save_settings
 from fileaudit.reports import export_report_bundle
-from fileaudit.services import ScanWorker
+from fileaudit.services import PreviewWorker, ScanWorker
+from fileaudit.utils import format_size, format_skip_reasons
 from fileaudit.ui.components import BottomBar, Sidebar, TopBar
 from fileaudit.ui.pages import (
     DuplicatePage,
@@ -32,12 +33,14 @@ class MainWindow(QMainWindow):
         self.top_bar = TopBar()
         self.bottom_bar = BottomBar()
         self.pages = QStackedWidget()
+        self.preview_worker = None
         self.scan_worker = None
         self.scan_result = None
         self.settings = load_settings()
 
         self.scan_config_page = ScanConfigPage()
         self.scan_config_page.folder_selected.connect(self.on_folder_selected)
+        self.scan_config_page.preview_requested.connect(self.on_preview_requested)
         self.scan_config_page.scan_requested.connect(self.on_scan_requested)
         self.scan_config_page.cancel_requested.connect(self.on_cancel_requested)
         self.scan_config_page.clear_requested.connect(self.on_clear_requested)
@@ -96,6 +99,9 @@ class MainWindow(QMainWindow):
         if self.scan_worker and self.scan_worker.isRunning():
             self.bottom_bar.set_message("扫描正在进行中")
             return
+        if self.preview_worker and self.preview_worker.isRunning():
+            self.bottom_bar.set_message("预检查正在进行中，请稍后再开始扫描")
+            return
 
         if not self.scan_config_page.path_input.text().strip():
             QMessageBox.warning(self, "扫描配置错误", "请先选择要扫描的目录。")
@@ -114,7 +120,7 @@ class MainWindow(QMainWindow):
         self.bottom_bar.set_message(f"开始扫描：{options.root_path}")
 
         self.scan_worker = ScanWorker(options)
-        self.scan_worker.progress_changed.connect(self.on_scan_progress)
+        self.scan_worker.detail_progress_changed.connect(self.on_scan_detail_progress)
         self.scan_worker.scan_finished.connect(self.on_scan_finished)
         self.scan_worker.scan_failed.connect(self.on_scan_failed)
         self.scan_worker.finished.connect(self.on_scan_worker_finished)
@@ -128,6 +134,91 @@ class MainWindow(QMainWindow):
             return
 
         self.bottom_bar.set_message(f"正在扫描文件：{count:,} - {file_path}")
+
+    def on_scan_detail_progress(
+        self,
+        stage: str,
+        count: int,
+        total: int,
+        total_dirs: int,
+        skipped_files: int,
+        error_count: int,
+        file_path: str,
+    ):
+        display_path = shorten_path(file_path)
+        if stage == "hash":
+            total_text = f" / {total:,}" if total else ""
+            self.bottom_bar.set_message(
+                f"正在计算重复文件 Hash：{count:,}{total_text}，目录 {total_dirs:,}，跳过 {skipped_files:,}，错误 {error_count:,} - {display_path}"
+            )
+            return
+
+        self.bottom_bar.set_message(
+            f"正在扫描：文件 {count:,}，目录 {total_dirs:,}，跳过 {skipped_files:,}，错误 {error_count:,} - {display_path}"
+        )
+
+    def on_preview_requested(self):
+        if self.scan_worker and self.scan_worker.isRunning():
+            self.bottom_bar.set_message("扫描正在进行中，无法预检查")
+            return
+        if self.preview_worker and self.preview_worker.isRunning():
+            self.bottom_bar.set_message("预检查正在进行中")
+            return
+        if not self.scan_config_page.path_input.text().strip():
+            QMessageBox.warning(self, "扫描配置错误", "请先选择要扫描的目录。")
+            return
+
+        try:
+            options = self.scan_config_page.get_scan_options()
+        except ValueError as error:
+            QMessageBox.warning(self, "扫描配置错误", str(error))
+            return
+
+        self.bottom_bar.set_busy(True)
+        self.bottom_bar.set_message(f"正在预检查：{options.root_path}")
+        self.preview_worker = PreviewWorker(options)
+        self.preview_worker.preview_progress_changed.connect(self.on_preview_progress)
+        self.preview_worker.preview_finished.connect(self.on_preview_finished)
+        self.preview_worker.preview_failed.connect(self.on_preview_failed)
+        self.preview_worker.finished.connect(self.on_preview_worker_finished)
+        self.preview_worker.finished.connect(self.preview_worker.deleteLater)
+        self.preview_worker.start()
+
+    def on_preview_progress(
+        self,
+        stage: str,
+        count: int,
+        total: int,
+        total_dirs: int,
+        skipped_files: int,
+        error_count: int,
+        file_path: str,
+    ):
+        self.bottom_bar.set_message(
+            f"正在预检查：预计文件 {count:,}，目录 {total_dirs:,}，跳过 {skipped_files:,}，错误 {error_count:,} - {shorten_path(file_path)}"
+        )
+
+    def on_preview_finished(self, preview):
+        self.bottom_bar.set_busy(False)
+        self.bottom_bar.set_progress(0)
+        hash_text = f"，Hash 候选 {preview.hash_candidate_files:,}" if preview.hash_candidate_files else ""
+        skip_text = format_skip_reasons(preview.skip_reasons)
+        skip_suffix = f"，跳过原因：{skip_text}" if skip_text else ""
+        canceled_text = "（已取消）" if preview.canceled else ""
+        self.bottom_bar.set_message(
+            f"预检查{canceled_text}：预计扫描 {preview.total_files:,} 个文件，目录 {preview.total_dirs:,}，"
+            f"大小 {format_size(preview.total_size)}，跳过 {preview.skipped_files + preview.skipped_dirs:,}，"
+            f"错误 {preview.error_count:,}{hash_text}{skip_suffix}"
+        )
+
+    def on_preview_failed(self, message: str):
+        self.bottom_bar.set_busy(False)
+        self.bottom_bar.set_progress(0)
+        self.bottom_bar.set_message(f"预检查失败：{message}")
+        QMessageBox.warning(self, "预检查失败", message)
+
+    def on_preview_worker_finished(self):
+        self.preview_worker = None
 
     def on_scan_finished(self, result):
         self.scan_result = result
@@ -234,3 +325,12 @@ class MainWindow(QMainWindow):
 
         self.bottom_bar.set_message(f"报告已生成：{report_path}")
         QMessageBox.information(self, "导出完成", f"报告已生成：\n{report_path}")
+
+
+def shorten_path(path: str, max_length: int = 90) -> str:
+    if len(path) <= max_length:
+        return path
+    keep = max_length - 3
+    head = keep // 2
+    tail = keep - head
+    return f"{path[:head]}...{path[-tail:]}"

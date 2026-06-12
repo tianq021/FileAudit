@@ -1,5 +1,5 @@
 """Core scanning and analysis logic."""
 
-from fileaudit.core.scanner import scan_directory
+from fileaudit.core.scanner import preview_scan, scan_directory
 
-__all__ = ["scan_directory"]
+__all__ = ["preview_scan", "scan_directory"]

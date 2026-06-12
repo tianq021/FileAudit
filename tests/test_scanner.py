@@ -6,7 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from fileaudit.config import default_settings
-from fileaudit.core.scanner import _format_scan_error, _raise_if_timed_out, scan_directory
+from fileaudit.core.scanner import _format_scan_error, _raise_if_timed_out, preview_scan, scan_directory
 from fileaudit.models import DEFAULT_SKIP_DIRS, ScanError, ScanOptions, ScanResult
 from fileaudit.reports.exporter import export_report_bundle
 
@@ -233,6 +233,48 @@ class ScannerTests(unittest.TestCase):
             self.assertEqual(len(skip_wins_result.records), 0)
             self.assertEqual(skip_wins_result.summary.skip_reasons["skip extension"], 1)
             self.assertEqual({record.name for record in include_wins_result.records}, {"secret.pem"})
+
+    def test_preview_scan_estimates_skips_and_hash_candidates(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            ignored_dir = root / "node_modules"
+            ignored_dir.mkdir()
+            (ignored_dir / "ignored.txt").write_text("ignored", encoding="utf-8")
+            (root / "a.txt").write_text("same", encoding="utf-8")
+            (root / "b.txt").write_text("same", encoding="utf-8")
+            (root / "secret.pem").write_text("secret", encoding="utf-8")
+
+            preview = preview_scan(
+                ScanOptions(
+                    root_path=root,
+                    ignored_dirs=("node_modules",),
+                    skip_extensions=(".pem",),
+                    calculate_hash=True,
+                )
+            )
+
+            self.assertEqual(preview.total_files, 2)
+            self.assertEqual(preview.skipped_files, 1)
+            self.assertEqual(preview.skipped_dirs, 1)
+            self.assertEqual(preview.skip_reasons["skip extension"], 1)
+            self.assertEqual(preview.skip_reasons["skip dir name"], 1)
+            self.assertEqual(preview.hash_candidate_files, 2)
+
+    def test_scan_detail_progress_reports_dirs_skips_and_errors(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "secret.pem").write_text("secret", encoding="utf-8")
+            (root / "visible.txt").write_text("visible", encoding="utf-8")
+            events = []
+
+            scan_directory(
+                ScanOptions(root_path=root, calculate_hash=False, skip_extensions=(".pem",)),
+                stage_progress_callback=lambda stage, count, total, path, dirs, skipped, errors: events.append(
+                    (stage, count, dirs, skipped, errors, path.name)
+                ),
+            )
+
+            self.assertEqual(events[-1], ("scan", 1, 1, 1, 0, "visible.txt"))
 
     def test_detects_future_modified_time(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSize, Qt, Signal
 from PySide6.QtGui import QIntValidator
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -17,8 +17,7 @@ from PySide6.QtWidgets import (
     QRadioButton,
     QScrollArea,
     QStyle,
-    QTableWidget,
-    QTableWidgetItem,
+    QTableView,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -45,18 +44,101 @@ from fileaudit.utils import (
     build_skip_reason_distribution,
     classify_file_type,
     format_datetime,
+    format_risk_actions,
+    format_risk_explanations,
     format_risk_level,
     format_risk_reasons,
     format_size,
     risk_sort_key,
 )
 
-INITIAL_TABLE_ROWS = 5000
-LOAD_MORE_ROWS = 1000
+class ListTableModel(QAbstractTableModel):
+    def __init__(self, headers: list[str], row_builder):
+        super().__init__()
+        self.headers = headers
+        self.row_builder = row_builder
+        self.rows = []
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        return 0 if parent.isValid() else len(self.rows)
+
+    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        return 0 if parent.isValid() else len(self.headers)
+
+    def data(self, index: QModelIndex, role: int = Qt.DisplayRole):
+        if not index.isValid() or index.row() >= len(self.rows):
+            return None
+        if role not in (Qt.DisplayRole, Qt.ToolTipRole):
+            return None
+        row_values = self.row_builder(self.rows[index.row()])
+        if index.column() >= len(row_values):
+            return None
+        return row_values[index.column()]
+
+    def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.DisplayRole):
+        if role != Qt.DisplayRole:
+            return None
+        if orientation == Qt.Horizontal and section < len(self.headers):
+            return self.headers[section]
+        if orientation == Qt.Vertical:
+            return str(section + 1)
+        return None
+
+    def set_rows(self, rows) -> None:
+        self.beginResetModel()
+        self.rows = list(rows)
+        self.endResetModel()
+
+OPTION_TOOLTIPS = {
+    "recursive": "扫描所选目录下的所有子目录。关闭后只扫描当前目录中的文件。",
+    "calculate_hash": "读取文件内容并计算 Hash，用于发现内容完全相同的重复文件。文件很多或很大时会更慢。",
+    "detect_suspicious_extensions": "根据可疑扩展名列表标记高风险文件，例如脚本、可执行文件或安装包。",
+    "detect_double_extensions": "识别类似 report.pdf.exe 这类双扩展名伪装文件。",
+    "detect_empty_files": "标记大小为 0 的空文件，便于发现占位文件或异常文件。",
+    "detect_time_anomalies": "标记创建时间、修改时间明显异常的文件。",
+    "detect_long_paths": "完整路径长度超过阈值时标记为路径过长风险。",
+}
+
+CONTROL_TOOLTIPS = {
+    "path_input": "选择本次要扫描的根目录。",
+    "scan_dir_input": "新建扫描任务时默认填入的目录。",
+    "report_dir_input": "导出报告时默认使用的目录。",
+    "scan_all_radio": "扫描目录下所有未被跳过规则排除的文件。",
+    "include_only_radio": "只扫描命中“只扫描规则”的文件，跳过规则仍然优先。",
+    "hidden_file_mode_select": (
+        "标记风险：扫描隐藏文件并标记风险。\n"
+        "跳过文件：隐藏文件不参与扫描。\n"
+        "忽略：正常扫描隐藏文件，但不因为隐藏属性标记风险。"
+    ),
+    "big_file_mode_select": (
+        "标记风险：超过阈值的文件会被标记为大文件风险。\n"
+        "跳过文件：超过阈值的文件不参与扫描，可减少耗时。\n"
+        "关闭：不检测大文件风险。"
+    ),
+    "big_file_input": "大文件判断阈值，单位 MB。会配合“大文件处理”模式使用。",
+    "path_length_input": "完整文件路径超过该字符数时，会在开启路径过长检测后标记风险。",
+    "file_timeout_input": "单个文件处理允许的最长秒数。填写 0 表示不限制。",
+    "modified_time_months_input": "概览统计中用于区分最近文件和较早文件的月份范围。",
+    "hash_select": "重复文件检测使用的 Hash 算法。SHA256 更稳妥，MD5/SHA1 更快但不推荐用于安全判断。",
+    "ignored_dirs_edit": "目录名命中后会忽略该目录。每行一个名称，例如 node_modules。",
+    "suspicious_extensions_edit": "会被标记为可疑的扩展名。每行一个，可写 exe 或 .exe。",
+    "whitelisted_extensions_edit": "白名单扩展名不会按可疑扩展名标记。每行一个，可写 txt 或 .txt。",
+    "skip_dirs_edit": "目录名命中后跳过整个目录。每行一个名称，不需要写完整路径。",
+    "skip_file_names_edit": "文件名完全命中后跳过该文件。每行一个文件名。",
+    "skip_extensions_edit": "扩展名命中后跳过该类文件。每行一个，可写 log 或 .log。",
+    "skip_path_keywords_edit": "完整路径中包含关键词时跳过。每行一个关键词，适合排除缓存或隐私目录。",
+    "include_only_matched_check": "启用后只扫描命中下方“只扫描规则”的文件；跳过规则仍然优先。",
+    "include_extensions_edit": "只扫描这些扩展名的文件。开启只扫描模式后生效，每行一个。",
+    "include_name_keywords_edit": "文件名包含关键词时才扫描。开启只扫描模式后生效，每行一个。",
+    "include_path_keywords_edit": "完整路径包含关键词时才扫描。开启只扫描模式后生效，每行一个。",
+    "include_file_types_edit": "只扫描这些文件类型。开启只扫描模式后生效，每行一个。",
+    "export_full_paths_check": "导出报告时包含完整文件路径。关闭后可减少敏感路径泄露。",
+}
 
 
 class ScanConfigPage(QWidget):
     folder_selected = Signal(str)
+    preview_requested = Signal()
     scan_requested = Signal()
     cancel_requested = Signal()
     clear_requested = Signal()
@@ -84,6 +166,7 @@ class ScanConfigPage(QWidget):
         self.include_file_types_edit = QTextEdit()
         self.scan_all_radio = QRadioButton("全部扫描")
         self.include_only_radio = QRadioButton("只扫描匹配规则")
+        self.rule_status_label = QLabel()
         self.option_checks = {}
         self._setup_ui()
 
@@ -161,6 +244,7 @@ class ScanConfigPage(QWidget):
         for index, (key, text) in enumerate(options):
             checkbox = QCheckBox(text)
             checkbox.setChecked(True)
+            checkbox.setToolTip(OPTION_TOOLTIPS[key])
             self.option_checks[key] = checkbox
             if key in {"recursive", "calculate_hash"}:
                 option_layout.addWidget(checkbox, 0, 0 if key == "recursive" else 1)
@@ -270,6 +354,10 @@ class ScanConfigPage(QWidget):
         advanced_state_layout.addWidget(include_box)
 
         button_row = QHBoxLayout()
+        preview_btn = QPushButton("预检查")
+        preview_btn.clicked.connect(self.preview_requested.emit)
+        self.preview_btn = preview_btn
+
         start_btn = QPushButton("开始扫描")
         start_btn.setObjectName("PrimaryButton")
         start_btn.clicked.connect(self.scan_requested.emit)
@@ -279,10 +367,15 @@ class ScanConfigPage(QWidget):
         clear_btn = QPushButton("清空结果")
         clear_btn.clicked.connect(self.clear_requested.emit)
 
+        button_row.addWidget(preview_btn)
         button_row.addWidget(start_btn)
         button_row.addWidget(self.cancel_btn)
         button_row.addWidget(clear_btn)
         button_row.addStretch()
+
+        apply_control_tooltips(self)
+        connect_rule_feedback(self)
+        update_rule_feedback(self)
 
         layout.addLayout(title_row)
         layout.addWidget(desc)
@@ -290,6 +383,7 @@ class ScanConfigPage(QWidget):
         layout.addWidget(mode_box)
         layout.addWidget(option_box)
         layout.addWidget(advanced_state_box)
+        layout.addWidget(self.rule_status_label)
         layout.addLayout(button_row)
         layout.addStretch()
         scroll.setWidget(content)
@@ -408,6 +502,7 @@ class ScanConfigPage(QWidget):
         self.include_name_keywords_edit.setPlainText("\n".join(settings.include_name_keywords))
         self.include_path_keywords_edit.setPlainText("\n".join(settings.include_path_keywords))
         self.include_file_types_edit.setPlainText("\n".join(settings.include_file_types))
+        update_rule_feedback(self)
 
 
 class OverviewPage(QWidget):
@@ -591,7 +686,6 @@ class FileDetailPage(QWidget):
         self.records = []
         self.sort_column = 3
         self.sort_reverse = True
-        self.visible_limit = INITIAL_TABLE_ROWS
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(12)
@@ -605,22 +699,21 @@ class FileDetailPage(QWidget):
 
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("搜索文件名 / 路径")
-        self.search_input.textChanged.connect(self.reset_visible_limit_and_apply)
+        self.search_input.textChanged.connect(self.apply_filters)
 
         self.risk_filter = QComboBox()
         self.risk_filter.addItems(["全部风险", "高风险", "中风险", "低风险", "正常"])
-        self.risk_filter.currentIndexChanged.connect(self.reset_visible_limit_and_apply)
+        self.risk_filter.currentIndexChanged.connect(self.apply_filters)
 
         self.type_filter = QComboBox()
         self.type_filter.addItems(["全部类型", "文档", "图片", "音视频", "压缩包", "代码", "可执行", "其他"])
-        self.type_filter.currentIndexChanged.connect(self.reset_visible_limit_and_apply)
+        self.type_filter.currentIndexChanged.connect(self.apply_filters)
 
         filter_row.addWidget(self.search_input, 1)
         filter_row.addWidget(self.risk_filter)
         filter_row.addWidget(self.type_filter)
 
-        self.table = QTableWidget(0, 9)
-        self.table.setHorizontalHeaderLabels([
+        self.table_model = ListTableModel([
             "文件名",
             "路径",
             "扩展名",
@@ -630,47 +723,34 @@ class FileDetailPage(QWidget):
             "风险",
             "原因",
             "Hash"
-        ])
+        ], file_detail_row_values)
+        self.table = QTableView()
+        self.table.setModel(self.table_model)
         configure_path_table(self.table, 1)
-        self.table.setSortingEnabled(False)
         header = self.table.horizontalHeader()
         header.setSectionsClickable(True)
         header.setSortIndicatorShown(True)
         header.setSortIndicator(self.sort_column, Qt.DescendingOrder)
         header.sectionClicked.connect(self.on_sort_requested)
 
-        self.load_more_btn = QPushButton("查看更多 1000 行")
-        self.load_more_btn.clicked.connect(self.load_more)
-
         layout.addWidget(title)
         layout.addWidget(self.summary_label)
         layout.addLayout(filter_row)
         layout.addWidget(self.table, 1)
-        layout.addWidget(self.load_more_btn)
 
     def update_result(self, result):
         self.records = result.records
-        self.visible_limit = INITIAL_TABLE_ROWS
         self.apply_filters()
 
     def clear_result(self):
         self.records = []
-        self.visible_limit = INITIAL_TABLE_ROWS
-        self.table.setRowCount(0)
+        self.table_model.set_rows([])
         self.summary_label.setText("显示文件：0 / 0")
-        self.load_more_btn.setVisible(False)
 
     def apply_filters(self):
         records = self.filtered_records()
-        self.populate_table(records)
-        shown = min(len(records), self.visible_limit)
-        limited_text = f"，当前表格显示前 {shown:,} 行" if len(records) > self.visible_limit else ""
-        self.summary_label.setText(f"显示文件：{len(records):,} / {len(self.records):,}{limited_text}")
-        self.load_more_btn.setVisible(len(records) > self.visible_limit)
-
-    def reset_visible_limit_and_apply(self):
-        self.visible_limit = INITIAL_TABLE_ROWS
-        self.apply_filters()
+        self.table_model.set_rows(records)
+        self.summary_label.setText(f"显示文件：{len(records):,} / {len(self.records):,}")
 
     def filtered_records(self):
         keyword = self.search_input.text().strip().lower()
@@ -690,27 +770,6 @@ class FileDetailPage(QWidget):
         records.sort(key=lambda record: file_detail_sort_key(record, self.sort_column), reverse=self.sort_reverse)
         return records
 
-    def populate_table(self, records):
-        visible_records = records[:self.visible_limit]
-        self.table.setRowCount(len(visible_records))
-
-        for row_index, record in enumerate(visible_records):
-            row_values = [
-                record.name,
-                str(record.path),
-                record.extension or "[无]",
-                format_size(record.size),
-                format_datetime(record.created_at),
-                format_datetime(record.modified_at),
-                format_risk_level(record.risk_level),
-                format_risk_reasons(record.risk_reasons),
-                record.hash_value,
-            ]
-            for column_index, value in enumerate(row_values):
-                item = QTableWidgetItem(value)
-                item.setToolTip(value)
-                self.table.setItem(row_index, column_index, item)
-
     def on_sort_requested(self, column_index: int):
         if self.sort_column == column_index:
             self.sort_reverse = not self.sort_reverse
@@ -721,16 +780,11 @@ class FileDetailPage(QWidget):
         self.table.horizontalHeader().setSortIndicator(self.sort_column, order)
         self.apply_filters()
 
-    def load_more(self):
-        self.visible_limit += LOAD_MORE_ROWS
-        self.apply_filters()
-
 
 class DuplicatePage(QWidget):
     def __init__(self):
         super().__init__()
         self.rows = []
-        self.visible_limit = INITIAL_TABLE_ROWS
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(12)
@@ -741,29 +795,24 @@ class DuplicatePage(QWidget):
         self.summary_label = QLabel("重复文件组：0，可节省空间：0 B")
         self.summary_label.setObjectName("PageDesc")
 
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels([
+        self.table_model = ListTableModel([
             "组号",
             "文件名",
             "路径",
             "大小",
             "组内文件数",
             "Hash",
-        ])
+        ], duplicate_row_values)
+        self.table = QTableView()
+        self.table.setModel(self.table_model)
         configure_path_table(self.table, 2)
-        self.table.setSortingEnabled(False)
-
-        self.load_more_btn = QPushButton("查看更多 1000 行")
-        self.load_more_btn.clicked.connect(self.load_more)
 
         layout.addWidget(title)
         layout.addWidget(self.summary_label)
         layout.addWidget(self.table, 1)
-        layout.addWidget(self.load_more_btn)
 
     def update_result(self, result):
         self.last_result = result
-        self.visible_limit = INITIAL_TABLE_ROWS
         self.rows = []
         for group_index, group in enumerate(result.duplicate_groups, start=1):
             for record in group.files:
@@ -772,50 +821,24 @@ class DuplicatePage(QWidget):
 
     def clear_result(self):
         self.rows = []
-        self.visible_limit = INITIAL_TABLE_ROWS
         if hasattr(self, "last_result"):
             del self.last_result
-        self.table.setRowCount(0)
+        self.table_model.set_rows([])
         self.summary_label.setText("重复文件组：0，可节省空间：0 B")
-        self.load_more_btn.setVisible(False)
 
     def populate_table(self, result):
-        visible_rows = self.rows[:self.visible_limit]
-        self.table.setRowCount(len(visible_rows))
-        for row_index, (group_index, group, record) in enumerate(visible_rows):
-            row_values = [
-                str(group_index),
-                record.name,
-                str(record.path),
-                format_size(record.size),
-                str(len(group.files)),
-                group.hash_value,
-            ]
-            for column_index, value in enumerate(row_values):
-                item = QTableWidgetItem(value)
-                item.setToolTip(value)
-                self.table.setItem(row_index, column_index, item)
-
+        self.table_model.set_rows(self.rows)
         self.summary_label.setText(
             f"重复文件组：{len(result.duplicate_groups):,}，"
             f"重复文件：{result.summary.duplicate_files:,}，"
             f"可节省空间：{format_size(result.summary.duplicate_wasted_size)}"
-            + (f"，当前表格显示前 {len(visible_rows):,} 行" if len(self.rows) > self.visible_limit else "")
         )
-        self.load_more_btn.setVisible(len(self.rows) > self.visible_limit)
-
-    def load_more(self):
-        if not hasattr(self, "last_result"):
-            return
-        self.visible_limit += LOAD_MORE_ROWS
-        self.populate_table(self.last_result)
 
 
 class RiskPage(QWidget):
     def __init__(self):
         super().__init__()
         self.records = []
-        self.visible_limit = INITIAL_TABLE_ROWS
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(12)
@@ -826,8 +849,7 @@ class RiskPage(QWidget):
         self.summary_label = QLabel("可疑文件：0")
         self.summary_label.setObjectName("PageDesc")
 
-        self.table = QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels([
+        self.table_model = ListTableModel([
             "风险",
             "文件名",
             "路径",
@@ -835,74 +857,47 @@ class RiskPage(QWidget):
             "大小",
             "修改时间",
             "原因",
-        ])
+            "说明",
+            "建议",
+        ], risk_row_values)
+        self.table = QTableView()
+        self.table.setModel(self.table_model)
         configure_path_table(self.table, 2)
-        self.table.setSortingEnabled(False)
-
-        self.load_more_btn = QPushButton("查看更多 1000 行")
-        self.load_more_btn.clicked.connect(self.load_more)
+        self.table.setColumnWidth(7, 360)
+        self.table.setColumnWidth(8, 420)
 
         layout.addWidget(title)
         layout.addWidget(self.summary_label)
         layout.addWidget(self.table, 1)
-        layout.addWidget(self.load_more_btn)
 
     def update_result(self, result):
         self.last_result = result
-        self.visible_limit = INITIAL_TABLE_ROWS
         self.records = [record for record in result.records if record.risk_level != "normal"]
         self.records.sort(key=lambda record: risk_sort_key(record.risk_level))
         self.populate_table(result)
 
     def clear_result(self):
         self.records = []
-        self.visible_limit = INITIAL_TABLE_ROWS
         if hasattr(self, "last_result"):
             del self.last_result
-        self.table.setRowCount(0)
+        self.table_model.set_rows([])
         self.summary_label.setText("可疑文件：0")
-        self.load_more_btn.setVisible(False)
 
     def populate_table(self, result):
-        visible_records = self.records[:self.visible_limit]
-        self.table.setRowCount(len(visible_records))
-        for row_index, record in enumerate(visible_records):
-            row_values = [
-                format_risk_level(record.risk_level),
-                record.name,
-                str(record.path),
-                record.extension or "[无]",
-                format_size(record.size),
-                format_datetime(record.modified_at),
-                format_risk_reasons(record.risk_reasons),
-            ]
-            for column_index, value in enumerate(row_values):
-                item = QTableWidgetItem(value)
-                item.setToolTip(value)
-                self.table.setItem(row_index, column_index, item)
-
+        self.table_model.set_rows(self.records)
         high_count = result.summary.risk_counts.get("high", 0)
         medium_count = result.summary.risk_counts.get("medium", 0)
         low_count = result.summary.risk_counts.get("low", 0)
         self.summary_label.setText(
             f"可疑文件：{len(self.records):,}，"
             f"高风险：{high_count:,}，中风险：{medium_count:,}，低风险：{low_count:,}"
-            + (f"，当前表格显示前 {len(visible_records):,} 行" if len(self.records) > self.visible_limit else "")
         )
-        self.load_more_btn.setVisible(len(self.records) > self.visible_limit)
-
-    def load_more(self):
-        if not hasattr(self, "last_result"):
-            return
-        self.visible_limit += LOAD_MORE_ROWS
-        self.populate_table(self.last_result)
 
 
 class ErrorPage(QWidget):
     def __init__(self):
         super().__init__()
         self.errors = []
-        self.visible_limit = INITIAL_TABLE_ROWS
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(12)
@@ -913,49 +908,28 @@ class ErrorPage(QWidget):
         self.summary_label = QLabel("扫描错误：0")
         self.summary_label.setObjectName("PageDesc")
 
-        self.table = QTableWidget(0, 2)
-        self.table.setHorizontalHeaderLabels(["路径", "错误原因"])
+        self.table_model = ListTableModel(["路径", "错误原因"], error_row_values)
+        self.table = QTableView()
+        self.table.setModel(self.table_model)
         configure_path_table(self.table, 0)
         self.table.setColumnWidth(1, 520)
-        self.table.setSortingEnabled(False)
-
-        self.load_more_btn = QPushButton("查看更多 1000 行")
-        self.load_more_btn.clicked.connect(self.load_more)
 
         layout.addWidget(title)
         layout.addWidget(self.summary_label)
         layout.addWidget(self.table, 1)
-        layout.addWidget(self.load_more_btn)
 
     def update_result(self, result):
         self.errors = result.errors
-        self.visible_limit = INITIAL_TABLE_ROWS
         self.populate_table()
 
     def clear_result(self):
         self.errors = []
-        self.visible_limit = INITIAL_TABLE_ROWS
-        self.table.setRowCount(0)
+        self.table_model.set_rows([])
         self.summary_label.setText("扫描错误：0")
-        self.load_more_btn.setVisible(False)
 
     def populate_table(self):
-        visible_errors = self.errors[:self.visible_limit]
-        self.table.setRowCount(len(visible_errors))
-        for row_index, error in enumerate(visible_errors):
-            row_values = [str(error.path), error.message]
-            for column_index, value in enumerate(row_values):
-                item = QTableWidgetItem(value)
-                item.setToolTip(value)
-                self.table.setItem(row_index, column_index, item)
-
-        limited_text = f"，当前表格显示前 {len(visible_errors):,} 行" if len(self.errors) > self.visible_limit else ""
-        self.summary_label.setText(f"扫描错误：{len(self.errors):,}{limited_text}")
-        self.load_more_btn.setVisible(len(self.errors) > self.visible_limit)
-
-    def load_more(self):
-        self.visible_limit += LOAD_MORE_ROWS
-        self.populate_table()
+        self.table_model.set_rows(self.errors)
+        self.summary_label.setText(f"扫描错误：{len(self.errors):,}")
 
 
 class ExportPage(QWidget):
@@ -1018,6 +992,7 @@ class SettingsPage(QWidget):
         self.include_path_keywords_edit = QTextEdit()
         self.include_file_types_edit = QTextEdit()
         self.export_full_paths_check = QCheckBox("报告导出完整路径")
+        self.rule_status_label = QLabel()
         self._setup_ui()
 
     def _setup_ui(self):
@@ -1110,6 +1085,7 @@ class SettingsPage(QWidget):
         ]
         for index, (key, text) in enumerate(options):
             checkbox = QCheckBox(text)
+            checkbox.setToolTip(OPTION_TOOLTIPS[key])
             self.option_checks[key] = checkbox
             options_grid.addWidget(checkbox, index // 3, index % 3)
 
@@ -1190,12 +1166,17 @@ class SettingsPage(QWidget):
         button_row.addWidget(reset_btn)
         button_row.addStretch()
 
+        apply_control_tooltips(self)
+        connect_rule_feedback(self)
+        update_rule_feedback(self)
+
         layout.addWidget(title)
         layout.addWidget(path_box)
         layout.addWidget(scan_box)
         layout.addWidget(rule_box)
         layout.addWidget(privacy_box)
         layout.addWidget(include_box)
+        layout.addWidget(self.rule_status_label)
         layout.addLayout(button_row)
         layout.addStretch()
         scroll.setWidget(content)
@@ -1235,6 +1216,7 @@ class SettingsPage(QWidget):
         self.include_path_keywords_edit.setPlainText("\n".join(settings.include_path_keywords))
         self.include_file_types_edit.setPlainText("\n".join(settings.include_file_types))
         self.export_full_paths_check.setChecked(settings.export_full_paths)
+        update_rule_feedback(self)
 
     def current_settings(self) -> AppSettings:
         big_file_threshold_mb = parse_positive_int(self.big_file_input.text(), 100, "大文件阈值")
@@ -1342,19 +1324,67 @@ def setup_simple_page(page: QWidget, title_text: str, body_text: str):
     layout.addWidget(panel, 1)
 
 
-def configure_path_table(table: QTableWidget, path_column: int):
+def configure_path_table(table: QTableView, path_column: int):
     table.setWordWrap(False)
     table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
     table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
     table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+    table.setSelectionBehavior(QAbstractItemView.SelectRows)
+    table.setAlternatingRowColors(False)
     header = table.horizontalHeader()
     header.setStretchLastSection(False)
     header.setSectionResizeMode(QHeaderView.Interactive)
     table.setColumnWidth(0, 180)
     table.setColumnWidth(path_column, 720)
-    for column in range(table.columnCount()):
+    model = table.model()
+    column_count = model.columnCount() if model is not None else 0
+    for column in range(column_count):
         if column not in {0, path_column}:
             table.setColumnWidth(column, 120)
+
+
+def file_detail_row_values(record) -> list[str]:
+    return [
+        record.name,
+        str(record.path),
+        record.extension or "[无]",
+        format_size(record.size),
+        format_datetime(record.created_at),
+        format_datetime(record.modified_at),
+        format_risk_level(record.risk_level),
+        format_risk_reasons(record.risk_reasons),
+        record.hash_value,
+    ]
+
+
+def duplicate_row_values(row) -> list[str]:
+    group_index, group, record = row
+    return [
+        str(group_index),
+        record.name,
+        str(record.path),
+        format_size(record.size),
+        str(len(group.files)),
+        group.hash_value,
+    ]
+
+
+def risk_row_values(record) -> list[str]:
+    return [
+        format_risk_level(record.risk_level),
+        record.name,
+        str(record.path),
+        record.extension or "[无]",
+        format_size(record.size),
+        format_datetime(record.modified_at),
+        format_risk_reasons(record.risk_reasons),
+        format_risk_explanations(record.risk_reasons),
+        format_risk_actions(record.risk_reasons),
+    ]
+
+
+def error_row_values(error) -> list[str]:
+    return [str(error.path), error.message]
 
 
 def _lines(text: str) -> list[str]:
@@ -1411,6 +1441,83 @@ def big_file_threshold_value(settings: AppSettings) -> int:
     if settings.skip_large_files_mb > 0:
         return settings.skip_large_files_mb
     return settings.big_file_threshold_mb
+
+
+def apply_control_tooltips(page: QWidget):
+    for name, tooltip in CONTROL_TOOLTIPS.items():
+        widget = getattr(page, name, None)
+        if widget is not None:
+            widget.setToolTip(tooltip)
+
+
+def connect_rule_feedback(page: QWidget):
+    def refresh(*_args):
+        update_rule_feedback(page)
+
+    for checkbox in getattr(page, "option_checks", {}).values():
+        checkbox.stateChanged.connect(refresh)
+
+    for name in (
+        "hidden_file_mode_select",
+        "big_file_mode_select",
+        "hash_select",
+    ):
+        widget = getattr(page, name, None)
+        if widget is not None:
+            widget.currentTextChanged.connect(refresh)
+
+    for name in (
+        "big_file_input",
+        "path_length_input",
+        "file_timeout_input",
+        "modified_time_months_input",
+    ):
+        widget = getattr(page, name, None)
+        if widget is not None:
+            widget.textChanged.connect(refresh)
+
+    for name in (
+        "ignored_dirs_edit",
+        "suspicious_extensions_edit",
+        "whitelisted_extensions_edit",
+        "skip_dirs_edit",
+        "skip_file_names_edit",
+        "skip_extensions_edit",
+        "skip_path_keywords_edit",
+        "include_extensions_edit",
+        "include_name_keywords_edit",
+        "include_path_keywords_edit",
+        "include_file_types_edit",
+    ):
+        widget = getattr(page, name, None)
+        if widget is not None:
+            widget.textChanged.connect(refresh)
+
+    for name in ("include_only_matched_check", "scan_all_radio", "include_only_radio"):
+        widget = getattr(page, name, None)
+        if widget is not None:
+            widget.toggled.connect(refresh)
+
+
+def update_rule_feedback(page: QWidget):
+    label = getattr(page, "rule_status_label", None)
+    if label is None:
+        return
+
+    try:
+        if hasattr(page, "current_settings"):
+            page.current_settings()
+        else:
+            page.get_scan_options()
+    except ValueError as error:
+        label.setText(f"规则状态：有冲突\n{error}")
+        label.setStyleSheet("color: #FCA5A5; font-size: 13px;")
+        label.setToolTip(str(error))
+        return
+
+    label.setText("规则状态：正常")
+    label.setStyleSheet("color: #86EFAC; font-size: 13px;")
+    label.setToolTip("当前规则没有发现明显冲突。")
 
 
 def risk_filter_value(text: str) -> str:

@@ -7,6 +7,7 @@ from fileaudit.models.scan import (
     FileRecord,
     ScanError,
     ScanOptions,
+    ScanPreview,
     ScanResult,
     ScanSummary,
 )
@@ -18,6 +19,7 @@ __all__ = [
     "FileRecord",
     "ScanError",
     "ScanOptions",
+    "ScanPreview",
     "ScanResult",
     "ScanSummary",
 ]

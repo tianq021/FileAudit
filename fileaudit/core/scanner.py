@@ -9,11 +9,11 @@ from pathlib import Path
 from time import monotonic
 from typing import Callable
 
-from fileaudit.models import DuplicateGroup, FileRecord, ScanError, ScanOptions, ScanResult, ScanSummary
+from fileaudit.models import DuplicateGroup, FileRecord, ScanError, ScanOptions, ScanPreview, ScanResult, ScanSummary
 from fileaudit.utils import classify_file_type
 
 ProgressCallback = Callable[[int, Path], None]
-StageProgressCallback = Callable[[str, int, int, Path], None]
+StageProgressCallback = Callable[[str, int, int, Path, int, int, int], None]
 CancelCallback = Callable[[], bool]
 
 HIGH_RISK_REASONS = {"double extension"}
@@ -46,6 +46,93 @@ class ScanCanceled(Exception):
 
 class ScanOperationTimeout(OSError):
     pass
+
+
+def preview_scan(
+    options: ScanOptions,
+    progress_callback: StageProgressCallback | None = None,
+    should_cancel: CancelCallback | None = None,
+) -> ScanPreview:
+    root_path = Path(options.root_path).expanduser().resolve()
+    skip_reasons: Counter[str] = Counter()
+    size_counts: Counter[int] = Counter()
+    total_files = 0
+    total_dirs = 0
+    total_size = 0
+    error_count = 0
+    canceled = False
+
+    if not root_path.exists():
+        raise FileNotFoundError(f"Scan root does not exist: {root_path}")
+    if not root_path.is_dir():
+        raise NotADirectoryError(f"Scan root is not a directory: {root_path}")
+
+    for current_root, dir_names, file_names in os.walk(root_path):
+        if should_cancel and should_cancel():
+            canceled = True
+            break
+
+        current_path = Path(current_root)
+        total_dirs += 1
+        skipped_dirs = _filter_dirs(current_path, dir_names, options)
+        skip_reasons.update(skipped_dirs)
+
+        if not options.recursive:
+            dir_names[:] = []
+
+        for file_name in file_names:
+            if should_cancel and should_cancel():
+                canceled = True
+                break
+
+            file_path = current_path / file_name
+            skip_reason = _file_skip_reason(file_path, options)
+            include_matched = _file_matches_include_rules(file_path, options)
+            if skip_reason and (options.include_conflict_policy != "include_wins" or not include_matched):
+                skip_reasons[skip_reason] += 1
+                continue
+            if not include_matched:
+                skip_reasons["skip include unmatched"] += 1
+                continue
+
+            try:
+                file_size = file_path.stat().st_size
+            except OSError:
+                error_count += 1
+                continue
+
+            total_files += 1
+            total_size += file_size
+            if file_size > 0:
+                size_counts[file_size] += 1
+
+            if progress_callback:
+                progress_callback(
+                    "preview",
+                    total_files,
+                    0,
+                    file_path,
+                    total_dirs,
+                    _skipped_files_count(skip_reasons),
+                    error_count,
+                )
+
+        if canceled:
+            break
+
+    hash_candidate_files = sum(count for count in size_counts.values() if count > 1) if options.calculate_hash else 0
+    return ScanPreview(
+        root_path=root_path,
+        total_files=total_files,
+        total_dirs=total_dirs,
+        total_size=total_size,
+        skipped_files=_skipped_files_count(skip_reasons),
+        skipped_dirs=_skipped_dirs_count(skip_reasons),
+        skip_reasons=dict(skip_reasons),
+        error_count=error_count,
+        hash_candidate_files=hash_candidate_files,
+        canceled=canceled,
+    )
 
 
 def scan_directory(
@@ -107,13 +194,21 @@ def scan_directory(
             if progress_callback:
                 progress_callback(len(records), file_path)
             if stage_progress_callback:
-                stage_progress_callback("scan", len(records), 0, file_path)
+                stage_progress_callback(
+                    "scan",
+                    len(records),
+                    0,
+                    file_path,
+                    total_dirs,
+                    _skipped_files_count(skip_reasons),
+                    len(errors),
+                )
 
         if canceled:
             break
 
     duplicate_groups = (
-        _find_duplicates(records, options, errors, skip_reasons, should_cancel, stage_progress_callback)
+        _find_duplicates(records, options, errors, skip_reasons, total_dirs, should_cancel, stage_progress_callback)
         if options.calculate_hash
         else []
     )
@@ -299,6 +394,7 @@ def _find_duplicates(
     options: ScanOptions,
     errors: list[ScanError],
     skip_reasons: Counter[str],
+    total_dirs: int,
     should_cancel: CancelCallback | None = None,
     stage_progress_callback: StageProgressCallback | None = None,
 ) -> list[DuplicateGroup]:
@@ -343,7 +439,15 @@ def _find_duplicates(
                 continue
             hashed_count += 1
             if stage_progress_callback:
-                stage_progress_callback("hash", hashed_count, total_hash_candidates, record.path)
+                stage_progress_callback(
+                    "hash",
+                    hashed_count,
+                    total_hash_candidates,
+                    record.path,
+                    total_dirs,
+                    _skipped_files_count(skip_reasons),
+                    len(errors),
+                )
             by_hash[record.hash_value].append(record)
 
         for hash_value, same_hash_records in by_hash.items():
@@ -436,3 +540,11 @@ def _build_summary(
         extension_counts=dict(extension_counts),
         risk_counts=dict(risk_counts),
     )
+
+
+def _skipped_files_count(skip_reasons: Counter[str]) -> int:
+    return sum(count for reason, count in skip_reasons.items() if reason.startswith("skip ") and "dir" not in reason)
+
+
+def _skipped_dirs_count(skip_reasons: Counter[str]) -> int:
+    return sum(count for reason, count in skip_reasons.items() if "dir" in reason)
