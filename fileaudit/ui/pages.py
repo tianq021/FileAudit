@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from fileaudit.config import AppSettings, default_settings
+from fileaudit.config.validation import validate_detection_skip_conflicts
 from fileaudit.ui.components import BarChart, DonutChart, StatCard
 from fileaudit.models import ScanOptions
 from fileaudit.utils import (
@@ -67,17 +68,16 @@ class ScanConfigPage(QWidget):
         self.path_length_input = QLineEdit("180")
         self.file_timeout_input = QLineEdit("15")
         self.hash_select = QComboBox()
+        self.hidden_file_mode_select = QComboBox()
+        self.big_file_mode_select = QComboBox()
         self.ignored_dirs_edit = QTextEdit()
         self.suspicious_extensions_edit = QTextEdit()
         self.whitelisted_extensions_edit = QTextEdit()
-        self.skip_hidden_files_check = QCheckBox("跳过隐藏文件")
-        self.skip_large_files_input = QLineEdit("0")
         self.skip_dirs_edit = QTextEdit()
         self.skip_file_names_edit = QTextEdit()
         self.skip_extensions_edit = QTextEdit()
         self.skip_path_keywords_edit = QTextEdit()
         self.include_only_matched_check = QCheckBox("只扫描匹配规则的文件")
-        self.include_conflict_select = QComboBox()
         self.include_extensions_edit = QTextEdit()
         self.include_name_keywords_edit = QTextEdit()
         self.include_path_keywords_edit = QTextEdit()
@@ -153,9 +153,7 @@ class ScanConfigPage(QWidget):
             ("calculate_hash", "查找重复文件"),
             ("detect_suspicious_extensions", "检测可疑扩展名"),
             ("detect_double_extensions", "检测双扩展名伪装"),
-            ("detect_hidden_files", "检测隐藏文件"),
             ("detect_empty_files", "检测空文件"),
-            ("detect_big_files", "检测大文件"),
             ("detect_time_anomalies", "检测时间异常"),
             ("detect_long_paths", "检测路径过长"),
         ]
@@ -171,14 +169,20 @@ class ScanConfigPage(QWidget):
         self.big_file_input.setFixedWidth(90)
         self.path_length_input.setFixedWidth(90)
         self.file_timeout_input.setFixedWidth(90)
-        self.skip_large_files_input.setFixedWidth(90)
         int_validator = QIntValidator(0, 2147483647, self)
         self.big_file_input.setValidator(int_validator)
         self.path_length_input.setValidator(int_validator)
         self.file_timeout_input.setValidator(int_validator)
-        self.skip_large_files_input.setValidator(int_validator)
         self.hash_select.addItems(["SHA256", "MD5", "SHA1(不推荐)"])
+        self.hidden_file_mode_select.addItems(["标记风险", "跳过文件", "忽略"])
+        self.big_file_mode_select.addItems(["标记风险", "跳过文件", "关闭"])
 
+        setting_row.addWidget(QLabel("隐藏文件处理："))
+        setting_row.addWidget(self.hidden_file_mode_select)
+        setting_row.addSpacing(30)
+        setting_row.addWidget(QLabel("大文件处理："))
+        setting_row.addWidget(self.big_file_mode_select)
+        setting_row.addSpacing(12)
         setting_row.addWidget(QLabel("大文件阈值："))
         setting_row.addWidget(self.big_file_input)
         setting_row.addWidget(QLabel("MB"))
@@ -217,11 +221,6 @@ class ScanConfigPage(QWidget):
         privacy_grid.setVerticalSpacing(8)
         for edit in [self.skip_dirs_edit, self.skip_file_names_edit, self.skip_extensions_edit, self.skip_path_keywords_edit]:
             edit.setFixedHeight(82)
-        privacy_top_row.addWidget(self.skip_hidden_files_check)
-        privacy_top_row.addSpacing(24)
-        privacy_top_row.addWidget(QLabel("跳过大于等于："))
-        privacy_top_row.addWidget(self.skip_large_files_input)
-        privacy_top_row.addWidget(QLabel("MB 的文件（0 表示不跳过）"))
         privacy_top_row.addStretch()
         privacy_grid.addWidget(QLabel("跳过目录名（每行一个）："), 0, 0)
         privacy_grid.addWidget(QLabel("跳过文件名（每行一个）："), 0, 1)
@@ -242,7 +241,6 @@ class ScanConfigPage(QWidget):
         include_grid = QGridLayout()
         include_grid.setHorizontalSpacing(16)
         include_grid.setVerticalSpacing(8)
-        self.include_conflict_select.addItems(["跳过规则优先", "只扫描规则优先"])
         for edit in [
             self.include_extensions_edit,
             self.include_name_keywords_edit,
@@ -251,9 +249,6 @@ class ScanConfigPage(QWidget):
         ]:
             edit.setFixedHeight(82)
         include_top_row.addWidget(self.include_only_matched_check)
-        include_top_row.addSpacing(24)
-        include_top_row.addWidget(QLabel("规则冲突时："))
-        include_top_row.addWidget(self.include_conflict_select)
         include_top_row.addStretch()
         include_grid.addWidget(QLabel("只扫描扩展名（每行一个）："), 0, 0)
         include_grid.addWidget(QLabel("只扫描文件名关键词（每行一个）："), 0, 1)
@@ -312,7 +307,44 @@ class ScanConfigPage(QWidget):
         threshold_mb = parse_positive_int(self.big_file_input.text(), 100, "大文件阈值")
         path_length_threshold = parse_positive_int(self.path_length_input.text(), 180, "路径过长阈值")
         file_timeout_seconds = parse_positive_int(self.file_timeout_input.text(), 15, "单文件超时")
-        skip_large_files_mb = parse_positive_int(self.skip_large_files_input.text(), 0, "跳过大文件阈值")
+        hidden_mode = self.hidden_file_mode_select.currentText()
+        big_file_mode = self.big_file_mode_select.currentText()
+        detect_hidden_files = hidden_mode == "标记风险"
+        skip_hidden_files = hidden_mode == "跳过文件"
+        detect_big_files = big_file_mode == "标记风险"
+        skip_large_files_mb = threshold_mb if big_file_mode == "跳过文件" else 0
+        ignored_dirs = tuple(_lines(self.ignored_dirs_edit.toPlainText()))
+        suspicious_extensions = tuple(_extension_lines(self.suspicious_extensions_edit.toPlainText()))
+        whitelisted_extensions = tuple(_extension_lines(self.whitelisted_extensions_edit.toPlainText()))
+        skip_dirs = tuple(_lines(self.skip_dirs_edit.toPlainText()))
+        skip_file_names = tuple(_lines(self.skip_file_names_edit.toPlainText()))
+        skip_extensions = tuple(_extension_lines(self.skip_extensions_edit.toPlainText()))
+        skip_path_keywords = tuple(_lines(self.skip_path_keywords_edit.toPlainText()))
+        include_extensions = tuple(_extension_lines(self.include_extensions_edit.toPlainText()))
+        include_name_keywords = tuple(_lines(self.include_name_keywords_edit.toPlainText()))
+        include_path_keywords = tuple(_lines(self.include_path_keywords_edit.toPlainText()))
+        include_file_types = tuple(_lines(self.include_file_types_edit.toPlainText()))
+        include_only_matched = self.include_only_radio.isChecked()
+        validate_detection_skip_conflicts(
+            detect_suspicious_extensions=self.option_checks["detect_suspicious_extensions"].isChecked(),
+            detect_double_extensions=self.option_checks["detect_double_extensions"].isChecked(),
+            detect_hidden_files=detect_hidden_files,
+            skip_hidden_files=skip_hidden_files,
+            detect_big_files=detect_big_files,
+            big_file_threshold_mb=threshold_mb,
+            skip_large_files_mb=skip_large_files_mb,
+            suspicious_extensions=suspicious_extensions,
+            whitelisted_extensions=whitelisted_extensions,
+            skip_extensions=skip_extensions,
+            ignored_dirs=ignored_dirs,
+            skip_dirs=skip_dirs,
+            skip_path_keywords=skip_path_keywords,
+            include_only_matched=include_only_matched,
+            include_extensions=include_extensions,
+            include_name_keywords=include_name_keywords,
+            include_path_keywords=include_path_keywords,
+            include_file_types=include_file_types,
+        )
         return ScanOptions(
             root_path=Path(self.path_input.text().strip()),
             recursive=self.option_checks["recursive"].isChecked(),
@@ -323,26 +355,26 @@ class ScanConfigPage(QWidget):
             file_timeout_seconds=file_timeout_seconds,
             detect_suspicious_extensions=self.option_checks["detect_suspicious_extensions"].isChecked(),
             detect_double_extensions=self.option_checks["detect_double_extensions"].isChecked(),
-            detect_hidden_files=self.option_checks["detect_hidden_files"].isChecked(),
+            detect_hidden_files=detect_hidden_files,
             detect_empty_files=self.option_checks["detect_empty_files"].isChecked(),
-            detect_big_files=self.option_checks["detect_big_files"].isChecked(),
+            detect_big_files=detect_big_files,
             detect_time_anomalies=self.option_checks["detect_time_anomalies"].isChecked(),
             detect_long_paths=self.option_checks["detect_long_paths"].isChecked(),
-            ignored_dirs=tuple(_lines(self.ignored_dirs_edit.toPlainText())),
-            suspicious_extensions=tuple(_extension_lines(self.suspicious_extensions_edit.toPlainText())),
-            whitelisted_extensions=tuple(_extension_lines(self.whitelisted_extensions_edit.toPlainText())),
-            skip_hidden_files=self.skip_hidden_files_check.isChecked(),
+            ignored_dirs=ignored_dirs,
+            suspicious_extensions=suspicious_extensions,
+            whitelisted_extensions=whitelisted_extensions,
+            skip_hidden_files=skip_hidden_files,
             skip_large_files_mb=skip_large_files_mb,
-            skip_dirs=tuple(_lines(self.skip_dirs_edit.toPlainText())),
-            skip_file_names=tuple(_lines(self.skip_file_names_edit.toPlainText())),
-            skip_extensions=tuple(_extension_lines(self.skip_extensions_edit.toPlainText())),
-            skip_path_keywords=tuple(_lines(self.skip_path_keywords_edit.toPlainText())),
-            include_only_matched=self.include_only_radio.isChecked(),
-            include_conflict_policy=include_conflict_policy_value(self.include_conflict_select.currentText()),
-            include_extensions=tuple(_extension_lines(self.include_extensions_edit.toPlainText())),
-            include_name_keywords=tuple(_lines(self.include_name_keywords_edit.toPlainText())),
-            include_path_keywords=tuple(_lines(self.include_path_keywords_edit.toPlainText())),
-            include_file_types=tuple(_lines(self.include_file_types_edit.toPlainText())),
+            skip_dirs=skip_dirs,
+            skip_file_names=skip_file_names,
+            skip_extensions=skip_extensions,
+            skip_path_keywords=skip_path_keywords,
+            include_only_matched=include_only_matched,
+            include_conflict_policy="skip_wins",
+            include_extensions=include_extensions,
+            include_name_keywords=include_name_keywords,
+            include_path_keywords=include_path_keywords,
+            include_file_types=include_file_types,
         )
 
     def apply_settings(self, settings: AppSettings):
@@ -352,20 +384,19 @@ class ScanConfigPage(QWidget):
         self.path_length_input.setText(str(settings.path_length_threshold))
         self.file_timeout_input.setText(str(settings.file_timeout_seconds))
         self.hash_select.setCurrentText(settings.hash_algorithm)
+        self.hidden_file_mode_select.setCurrentText(hidden_file_mode_label(settings))
+        self.big_file_mode_select.setCurrentText(big_file_mode_label(settings))
+        self.big_file_input.setText(str(big_file_threshold_value(settings)))
         self.option_checks["recursive"].setChecked(settings.recursive)
         self.option_checks["calculate_hash"].setChecked(settings.calculate_hash)
         self.option_checks["detect_suspicious_extensions"].setChecked(settings.detect_suspicious_extensions)
         self.option_checks["detect_double_extensions"].setChecked(settings.detect_double_extensions)
-        self.option_checks["detect_hidden_files"].setChecked(settings.detect_hidden_files)
         self.option_checks["detect_empty_files"].setChecked(settings.detect_empty_files)
-        self.option_checks["detect_big_files"].setChecked(settings.detect_big_files)
         self.option_checks["detect_time_anomalies"].setChecked(settings.detect_time_anomalies)
         self.option_checks["detect_long_paths"].setChecked(settings.detect_long_paths)
         self.ignored_dirs_edit.setPlainText("\n".join(settings.ignored_dirs))
         self.suspicious_extensions_edit.setPlainText("\n".join(settings.suspicious_extensions))
         self.whitelisted_extensions_edit.setPlainText("\n".join(settings.whitelisted_extensions))
-        self.skip_hidden_files_check.setChecked(settings.skip_hidden_files)
-        self.skip_large_files_input.setText(str(settings.skip_large_files_mb))
         self.skip_dirs_edit.setPlainText("\n".join(settings.skip_dirs))
         self.skip_file_names_edit.setPlainText("\n".join(settings.skip_file_names))
         self.skip_extensions_edit.setPlainText("\n".join(settings.skip_extensions))
@@ -373,7 +404,6 @@ class ScanConfigPage(QWidget):
         self.include_only_matched_check.setChecked(settings.include_only_matched)
         self.include_only_radio.setChecked(settings.include_only_matched)
         self.scan_all_radio.setChecked(not settings.include_only_matched)
-        self.include_conflict_select.setCurrentText(include_conflict_policy_label(settings.include_conflict_policy))
         self.include_extensions_edit.setPlainText("\n".join(settings.include_extensions))
         self.include_name_keywords_edit.setPlainText("\n".join(settings.include_name_keywords))
         self.include_path_keywords_edit.setPlainText("\n".join(settings.include_path_keywords))
@@ -972,18 +1002,17 @@ class SettingsPage(QWidget):
         self.file_timeout_input = QLineEdit()
         self.modified_time_months_input = QLineEdit()
         self.hash_select = QComboBox()
+        self.hidden_file_mode_select = QComboBox()
+        self.big_file_mode_select = QComboBox()
         self.option_checks = {}
         self.ignored_dirs_edit = QTextEdit()
         self.suspicious_extensions_edit = QTextEdit()
         self.whitelisted_extensions_edit = QTextEdit()
-        self.skip_hidden_files_check = QCheckBox("跳过隐藏文件")
-        self.skip_large_files_input = QLineEdit()
         self.skip_dirs_edit = QTextEdit()
         self.skip_file_names_edit = QTextEdit()
         self.skip_extensions_edit = QTextEdit()
         self.skip_path_keywords_edit = QTextEdit()
         self.include_only_matched_check = QCheckBox("只扫描匹配规则的文件")
-        self.include_conflict_select = QComboBox()
         self.include_extensions_edit = QTextEdit()
         self.include_name_keywords_edit = QTextEdit()
         self.include_path_keywords_edit = QTextEdit()
@@ -1021,50 +1050,72 @@ class SettingsPage(QWidget):
 
         scan_box = QFrame()
         scan_box.setObjectName("Panel")
-        scan_layout = QGridLayout(scan_box)
+        scan_layout = QVBoxLayout(scan_box)
+        scan_layout.setSpacing(12)
         self.hash_select.addItems(["SHA256", "MD5", "SHA1(不推荐)"])
         self.big_file_input.setFixedWidth(100)
         self.path_length_input.setFixedWidth(100)
         self.file_timeout_input.setFixedWidth(100)
         self.modified_time_months_input.setFixedWidth(100)
-        self.skip_large_files_input.setFixedWidth(100)
+        self.hidden_file_mode_select.setFixedWidth(150)
+        self.big_file_mode_select.setFixedWidth(150)
+        self.hash_select.setFixedWidth(150)
         int_validator = QIntValidator(0, 2147483647, self)
         month_validator = QIntValidator(1, 120, self)
         self.big_file_input.setValidator(int_validator)
         self.path_length_input.setValidator(int_validator)
         self.file_timeout_input.setValidator(int_validator)
         self.modified_time_months_input.setValidator(month_validator)
-        self.skip_large_files_input.setValidator(int_validator)
-        scan_layout.addWidget(QLabel("大文件阈值："), 0, 0)
-        scan_layout.addWidget(self.big_file_input, 0, 1)
-        scan_layout.addWidget(QLabel("MB"), 0, 2)
-        scan_layout.addWidget(QLabel("路径过长阈值："), 0, 3)
-        scan_layout.addWidget(self.path_length_input, 0, 4)
-        scan_layout.addWidget(QLabel("字符"), 0, 5)
-        scan_layout.addWidget(QLabel("Hash 算法："), 0, 6)
-        scan_layout.addWidget(self.hash_select, 0, 7)
-        scan_layout.addWidget(QLabel("单文件超时："), 1, 0)
-        scan_layout.addWidget(self.file_timeout_input, 1, 1)
-        scan_layout.addWidget(QLabel("秒（0 表示关闭）"), 1, 2)
-        scan_layout.addWidget(QLabel("修改时间分类："), 1, 3)
-        scan_layout.addWidget(self.modified_time_months_input, 1, 4)
-        scan_layout.addWidget(QLabel("个月内"), 1, 5)
+        self.hidden_file_mode_select.addItems(["标记风险", "跳过文件", "忽略"])
+        self.big_file_mode_select.addItems(["标记风险", "跳过文件", "关闭"])
+
+        def add_setting(row: QHBoxLayout, label_text: str, widget: QWidget, suffix_text: str = ""):
+            row.addWidget(QLabel(label_text))
+            row.addWidget(widget)
+            if suffix_text:
+                row.addWidget(QLabel(suffix_text))
+
+        setting_row_one = QHBoxLayout()
+        setting_row_one.setSpacing(10)
+        add_setting(setting_row_one, "隐藏文件处理：", self.hidden_file_mode_select)
+        setting_row_one.addSpacing(20)
+        add_setting(setting_row_one, "大文件处理：", self.big_file_mode_select)
+        setting_row_one.addSpacing(20)
+        add_setting(setting_row_one, "大文件阈值：", self.big_file_input, "MB")
+        setting_row_one.addStretch()
+
+        setting_row_two = QHBoxLayout()
+        setting_row_two.setSpacing(10)
+        add_setting(setting_row_two, "单文件超时：", self.file_timeout_input, "秒（0 表示关闭）")
+        setting_row_two.addSpacing(20)
+        add_setting(setting_row_two, "修改时间分类：", self.modified_time_months_input, "个月内")
+        setting_row_two.addSpacing(20)
+        add_setting(setting_row_two, "路径过长阈值：", self.path_length_input)
+        setting_row_two.addSpacing(20)
+        add_setting(setting_row_two, "Hash 算法：", self.hash_select)
+        setting_row_two.addStretch()
+
+        options_grid = QGridLayout()
+        options_grid.setHorizontalSpacing(18)
+        options_grid.setVerticalSpacing(10)
 
         options = [
             ("recursive", "递归扫描子目录"),
             ("calculate_hash", "计算 Hash 重复检测"),
             ("detect_suspicious_extensions", "检测可疑扩展名"),
             ("detect_double_extensions", "检测双扩展名伪装"),
-            ("detect_hidden_files", "检测隐藏文件"),
             ("detect_empty_files", "检测空文件"),
-            ("detect_big_files", "检测大文件"),
             ("detect_time_anomalies", "检测时间异常"),
             ("detect_long_paths", "检测路径过长"),
         ]
         for index, (key, text) in enumerate(options):
             checkbox = QCheckBox(text)
             self.option_checks[key] = checkbox
-            scan_layout.addWidget(checkbox, 2 + index // 3, index % 3)
+            options_grid.addWidget(checkbox, index // 3, index % 3)
+
+        scan_layout.addLayout(setting_row_one)
+        scan_layout.addLayout(setting_row_two)
+        scan_layout.addLayout(options_grid)
 
         rule_box = QFrame()
         rule_box.setObjectName("Panel")
@@ -1088,12 +1139,6 @@ class SettingsPage(QWidget):
         privacy_grid.setVerticalSpacing(8)
         for edit in [self.skip_dirs_edit, self.skip_file_names_edit, self.skip_extensions_edit, self.skip_path_keywords_edit]:
             edit.setFixedHeight(96)
-        privacy_top_row.addWidget(self.skip_hidden_files_check)
-        privacy_top_row.addSpacing(24)
-        privacy_top_row.addWidget(QLabel("跳过大于等于："))
-        privacy_top_row.addWidget(self.skip_large_files_input)
-        privacy_top_row.addWidget(QLabel("MB 的文件（0 表示不跳过）"))
-        privacy_top_row.addSpacing(24)
         privacy_top_row.addWidget(self.export_full_paths_check)
         privacy_top_row.addStretch()
         privacy_grid.addWidget(QLabel("跳过目录名（每行一个）："), 0, 0)
@@ -1115,7 +1160,6 @@ class SettingsPage(QWidget):
         include_grid = QGridLayout()
         include_grid.setHorizontalSpacing(16)
         include_grid.setVerticalSpacing(8)
-        self.include_conflict_select.addItems(["跳过规则优先", "只扫描规则优先"])
         for edit in [
             self.include_extensions_edit,
             self.include_name_keywords_edit,
@@ -1124,9 +1168,6 @@ class SettingsPage(QWidget):
         ]:
             edit.setFixedHeight(96)
         include_top_row.addWidget(self.include_only_matched_check)
-        include_top_row.addSpacing(24)
-        include_top_row.addWidget(QLabel("规则冲突时："))
-        include_top_row.addWidget(self.include_conflict_select)
         include_top_row.addStretch()
         include_grid.addWidget(QLabel("只扫描扩展名（每行一个）："), 0, 0)
         include_grid.addWidget(QLabel("只扫描文件名关键词（每行一个）："), 0, 1)
@@ -1176,19 +1217,19 @@ class SettingsPage(QWidget):
         self.file_timeout_input.setText(str(settings.file_timeout_seconds))
         self.modified_time_months_input.setText(str(settings.modified_time_months))
         self.hash_select.setCurrentText(settings.hash_algorithm)
+        self.hidden_file_mode_select.setCurrentText(hidden_file_mode_label(settings))
+        self.big_file_mode_select.setCurrentText(big_file_mode_label(settings))
+        self.big_file_input.setText(str(big_file_threshold_value(settings)))
         for key in self.option_checks:
             self.option_checks[key].setChecked(getattr(settings, key))
         self.ignored_dirs_edit.setPlainText("\n".join(settings.ignored_dirs))
         self.suspicious_extensions_edit.setPlainText("\n".join(settings.suspicious_extensions))
         self.whitelisted_extensions_edit.setPlainText("\n".join(settings.whitelisted_extensions))
-        self.skip_hidden_files_check.setChecked(settings.skip_hidden_files)
-        self.skip_large_files_input.setText(str(settings.skip_large_files_mb))
         self.skip_dirs_edit.setPlainText("\n".join(settings.skip_dirs))
         self.skip_file_names_edit.setPlainText("\n".join(settings.skip_file_names))
         self.skip_extensions_edit.setPlainText("\n".join(settings.skip_extensions))
         self.skip_path_keywords_edit.setPlainText("\n".join(settings.skip_path_keywords))
         self.include_only_matched_check.setChecked(settings.include_only_matched)
-        self.include_conflict_select.setCurrentText(include_conflict_policy_label(settings.include_conflict_policy))
         self.include_extensions_edit.setPlainText("\n".join(settings.include_extensions))
         self.include_name_keywords_edit.setPlainText("\n".join(settings.include_name_keywords))
         self.include_path_keywords_edit.setPlainText("\n".join(settings.include_path_keywords))
@@ -1196,38 +1237,80 @@ class SettingsPage(QWidget):
         self.export_full_paths_check.setChecked(settings.export_full_paths)
 
     def current_settings(self) -> AppSettings:
+        big_file_threshold_mb = parse_positive_int(self.big_file_input.text(), 100, "大文件阈值")
+        path_length_threshold = parse_positive_int(self.path_length_input.text(), 180, "路径过长阈值")
+        file_timeout_seconds = parse_positive_int(self.file_timeout_input.text(), 15, "单文件超时")
+        modified_time_months = parse_min_int(self.modified_time_months_input.text(), 3, "修改时间分类月份", 1)
+        hidden_mode = self.hidden_file_mode_select.currentText()
+        big_file_mode = self.big_file_mode_select.currentText()
+        detect_hidden_files = hidden_mode == "标记风险"
+        skip_hidden_files = hidden_mode == "跳过文件"
+        detect_big_files = big_file_mode == "标记风险"
+        skip_large_files_mb = big_file_threshold_mb if big_file_mode == "跳过文件" else 0
+        ignored_dirs = _lines(self.ignored_dirs_edit.toPlainText())
+        suspicious_extensions = _extension_lines(self.suspicious_extensions_edit.toPlainText())
+        whitelisted_extensions = _extension_lines(self.whitelisted_extensions_edit.toPlainText())
+        skip_dirs = _lines(self.skip_dirs_edit.toPlainText())
+        skip_file_names = _lines(self.skip_file_names_edit.toPlainText())
+        skip_extensions = _extension_lines(self.skip_extensions_edit.toPlainText())
+        skip_path_keywords = _lines(self.skip_path_keywords_edit.toPlainText())
+        include_extensions = _extension_lines(self.include_extensions_edit.toPlainText())
+        include_name_keywords = _lines(self.include_name_keywords_edit.toPlainText())
+        include_path_keywords = _lines(self.include_path_keywords_edit.toPlainText())
+        include_file_types = _lines(self.include_file_types_edit.toPlainText())
+        include_only_matched = self.include_only_matched_check.isChecked()
+        validate_detection_skip_conflicts(
+            detect_suspicious_extensions=self.option_checks["detect_suspicious_extensions"].isChecked(),
+            detect_double_extensions=self.option_checks["detect_double_extensions"].isChecked(),
+            detect_hidden_files=detect_hidden_files,
+            skip_hidden_files=skip_hidden_files,
+            detect_big_files=detect_big_files,
+            big_file_threshold_mb=big_file_threshold_mb,
+            skip_large_files_mb=skip_large_files_mb,
+            suspicious_extensions=suspicious_extensions,
+            whitelisted_extensions=whitelisted_extensions,
+            skip_extensions=skip_extensions,
+            ignored_dirs=ignored_dirs,
+            skip_dirs=skip_dirs,
+            skip_path_keywords=skip_path_keywords,
+            include_only_matched=include_only_matched,
+            include_extensions=include_extensions,
+            include_name_keywords=include_name_keywords,
+            include_path_keywords=include_path_keywords,
+            include_file_types=include_file_types,
+        )
         return AppSettings(
             default_scan_dir=self.scan_dir_input.text().strip(),
             default_report_dir=self.report_dir_input.text().strip(),
             recursive=self.option_checks["recursive"].isChecked(),
             calculate_hash=self.option_checks["calculate_hash"].isChecked(),
             hash_algorithm=self.hash_select.currentText(),
-            big_file_threshold_mb=parse_positive_int(self.big_file_input.text(), 100, "大文件阈值"),
-            path_length_threshold=parse_positive_int(self.path_length_input.text(), 180, "路径过长阈值"),
-            file_timeout_seconds=parse_positive_int(self.file_timeout_input.text(), 15, "单文件超时"),
-            modified_time_months=parse_min_int(self.modified_time_months_input.text(), 3, "修改时间分类月份", 1),
+            big_file_threshold_mb=big_file_threshold_mb,
+            path_length_threshold=path_length_threshold,
+            file_timeout_seconds=file_timeout_seconds,
+            modified_time_months=modified_time_months,
             detect_suspicious_extensions=self.option_checks["detect_suspicious_extensions"].isChecked(),
             detect_double_extensions=self.option_checks["detect_double_extensions"].isChecked(),
-            detect_hidden_files=self.option_checks["detect_hidden_files"].isChecked(),
+            detect_hidden_files=detect_hidden_files,
             detect_empty_files=self.option_checks["detect_empty_files"].isChecked(),
-            detect_big_files=self.option_checks["detect_big_files"].isChecked(),
+            detect_big_files=detect_big_files,
             detect_time_anomalies=self.option_checks["detect_time_anomalies"].isChecked(),
             detect_long_paths=self.option_checks["detect_long_paths"].isChecked(),
-            ignored_dirs=_lines(self.ignored_dirs_edit.toPlainText()),
-            suspicious_extensions=_extension_lines(self.suspicious_extensions_edit.toPlainText()),
-            whitelisted_extensions=_extension_lines(self.whitelisted_extensions_edit.toPlainText()),
-            skip_hidden_files=self.skip_hidden_files_check.isChecked(),
-            skip_large_files_mb=parse_positive_int(self.skip_large_files_input.text(), 0, "跳过大文件阈值"),
-            skip_dirs=_lines(self.skip_dirs_edit.toPlainText()),
-            skip_file_names=_lines(self.skip_file_names_edit.toPlainText()),
-            skip_extensions=_extension_lines(self.skip_extensions_edit.toPlainText()),
-            skip_path_keywords=_lines(self.skip_path_keywords_edit.toPlainText()),
-            include_only_matched=self.include_only_matched_check.isChecked(),
-            include_conflict_policy=include_conflict_policy_value(self.include_conflict_select.currentText()),
-            include_extensions=_extension_lines(self.include_extensions_edit.toPlainText()),
-            include_name_keywords=_lines(self.include_name_keywords_edit.toPlainText()),
-            include_path_keywords=_lines(self.include_path_keywords_edit.toPlainText()),
-            include_file_types=_lines(self.include_file_types_edit.toPlainText()),
+            ignored_dirs=ignored_dirs,
+            suspicious_extensions=suspicious_extensions,
+            whitelisted_extensions=whitelisted_extensions,
+            skip_hidden_files=skip_hidden_files,
+            skip_large_files_mb=skip_large_files_mb,
+            skip_dirs=skip_dirs,
+            skip_file_names=skip_file_names,
+            skip_extensions=skip_extensions,
+            skip_path_keywords=skip_path_keywords,
+            include_only_matched=include_only_matched,
+            include_conflict_policy="skip_wins",
+            include_extensions=include_extensions,
+            include_name_keywords=include_name_keywords,
+            include_path_keywords=include_path_keywords,
+            include_file_types=include_file_types,
             export_full_paths=self.export_full_paths_check.isChecked(),
         )
 
@@ -1308,12 +1391,26 @@ def parse_min_int(text: str, default: int, field_name: str, minimum: int) -> int
     return value
 
 
-def include_conflict_policy_value(text: str) -> str:
-    return "include_wins" if text == "只扫描规则优先" else "skip_wins"
+def hidden_file_mode_label(settings: AppSettings) -> str:
+    if settings.skip_hidden_files:
+        return "跳过文件"
+    if settings.detect_hidden_files:
+        return "标记风险"
+    return "忽略"
 
 
-def include_conflict_policy_label(value: str) -> str:
-    return "只扫描规则优先" if value == "include_wins" else "跳过规则优先"
+def big_file_mode_label(settings: AppSettings) -> str:
+    if settings.skip_large_files_mb > 0:
+        return "跳过文件"
+    if settings.detect_big_files and settings.big_file_threshold_mb > 0:
+        return "标记风险"
+    return "关闭"
+
+
+def big_file_threshold_value(settings: AppSettings) -> int:
+    if settings.skip_large_files_mb > 0:
+        return settings.skip_large_files_mb
+    return settings.big_file_threshold_mb
 
 
 def risk_filter_value(text: str) -> str:
