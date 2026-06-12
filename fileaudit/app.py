@@ -188,7 +188,10 @@ class MainWindow(QMainWindow):
 
     def apply_settings_to_pages(self):
         self.scan_config_page.apply_settings(self.settings)
+        self.overview_page.apply_settings(self.settings)
         self.settings_page.apply_settings(self.settings)
+        if self.scan_result:
+            self.overview_page.update_result(self.scan_result)
         if self.settings.default_scan_dir:
             self.current_path = self.settings.default_scan_dir
             self.sidebar.set_info("已加载设置", scan_path=self.current_path)
@@ -219,7 +222,12 @@ class MainWindow(QMainWindow):
 
         output_dir = Path(folder) / default_dir.name
         try:
-            report_path = export_report_bundle(self.scan_result, output_dir, export_full_paths=self.settings.export_full_paths)
+            report_path = export_report_bundle(
+                self.scan_result,
+                output_dir,
+                export_full_paths=self.settings.export_full_paths,
+                modified_time_months=self.settings.modified_time_months,
+            )
         except OSError as error:
             QMessageBox.warning(self, "导出失败", str(error))
             return

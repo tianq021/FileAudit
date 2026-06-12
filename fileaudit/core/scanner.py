@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable
 
 from fileaudit.models import DuplicateGroup, FileRecord, ScanError, ScanOptions, ScanResult, ScanSummary
+from fileaudit.utils import classify_file_type
 
 ProgressCallback = Callable[[int, Path], None]
 StageProgressCallback = Callable[[str, int, int, Path], None]
@@ -92,7 +93,7 @@ def scan_directory(
             try:
                 record = _build_record(file_path, options)
             except OSError as error:
-                errors.append(ScanError(file_path, str(error)))
+                errors.append(ScanError(file_path, _format_scan_error(error)))
                 continue
 
             records.append(record)
@@ -136,7 +137,7 @@ def _filter_dirs(current_path: Path, dir_names: list[str], options: ScanOptions)
 
 
 def _record_walk_error(error: OSError, errors: list[ScanError]) -> None:
-    errors.append(ScanError(Path(getattr(error, "filename", "")), str(error)))
+    errors.append(ScanError(Path(getattr(error, "filename", "")), _format_scan_error(error)))
 
 
 def _build_record(file_path: Path, options: ScanOptions) -> FileRecord:
@@ -202,7 +203,7 @@ def _file_matches_include_rules(file_path: Path, options: ScanOptions) -> bool:
         return True
 
     file_types = {item.strip() for item in options.include_file_types if item.strip()}
-    if file_types and _classify_file_type(extension) in file_types:
+    if file_types and classify_file_type(extension) in file_types:
         return True
 
     return False
@@ -210,50 +211,6 @@ def _file_matches_include_rules(file_path: Path, options: ScanOptions) -> bool:
 
 def _normalized_keywords(keywords: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(keyword.lower() for keyword in keywords if keyword)
-
-
-def _classify_file_type(extension: str) -> str:
-    extension = extension.lower()
-    groups = {
-        "文档": {
-            ".csv",
-            ".doc",
-            ".docx",
-            ".md",
-            ".pdf",
-            ".ppt",
-            ".pptx",
-            ".rtf",
-            ".txt",
-            ".xls",
-            ".xlsx",
-        },
-        "图片": {".bmp", ".gif", ".jpeg", ".jpg", ".png", ".svg", ".tif", ".tiff", ".webp"},
-        "音视频": {".aac", ".avi", ".flac", ".m4a", ".mkv", ".mov", ".mp3", ".mp4", ".wav", ".webm", ".wmv"},
-        "压缩包": {".7z", ".gz", ".rar", ".tar", ".tgz", ".zip"},
-        "代码": {
-            ".bat",
-            ".cmd",
-            ".css",
-            ".go",
-            ".html",
-            ".java",
-            ".js",
-            ".json",
-            ".py",
-            ".rs",
-            ".sh",
-            ".ts",
-            ".xml",
-            ".yaml",
-            ".yml",
-        },
-        "可执行": {".com", ".dll", ".exe", ".msi", ".scr"},
-    }
-    for name, extensions in groups.items():
-        if extension in extensions:
-            return name
-    return "其他"
 
 
 def _apply_risk_rules(record: FileRecord, options: ScanOptions) -> None:
@@ -362,7 +319,7 @@ def _find_duplicates(
             except ScanCanceled:
                 return duplicate_groups
             except OSError as error:
-                errors.append(ScanError(record.path, str(error)))
+                errors.append(ScanError(record.path, _format_scan_error(error)))
                 continue
             hashed_count += 1
             if stage_progress_callback:
@@ -396,6 +353,13 @@ def _normalize_hash_algorithm(algorithm: str) -> str:
     if normalized.startswith("md5"):
         return "md5"
     return normalized
+
+
+def _format_scan_error(error: OSError) -> str:
+    winerror = getattr(error, "winerror", None)
+    if isinstance(error, PermissionError) or winerror == 5:
+        return "无权限访问。Windows 受保护目录或系统文件通常会出现这个提示，可以在跳过目录中排除。"
+    return str(error)
 
 
 def _build_summary(

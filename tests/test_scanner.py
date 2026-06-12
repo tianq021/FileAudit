@@ -5,8 +5,9 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from fileaudit.core.scanner import scan_directory
-from fileaudit.models import ScanError, ScanOptions, ScanResult
+from fileaudit.config import default_settings
+from fileaudit.core.scanner import _format_scan_error, scan_directory
+from fileaudit.models import DEFAULT_SKIP_DIRS, ScanError, ScanOptions, ScanResult
 from fileaudit.reports.exporter import export_report_bundle
 
 
@@ -146,6 +147,27 @@ class ScannerTests(unittest.TestCase):
             self.assertEqual(result.summary.skip_reasons["skip extension"], 1)
             self.assertEqual(result.summary.skip_reasons["skip dir name"], 1)
 
+    def test_protected_windows_dirs_are_skipped_by_default(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            protected_dir = root / "System Volume Information"
+            protected_dir.mkdir()
+            (protected_dir / "metadata.dat").write_text("secret", encoding="utf-8")
+            (root / "normal.txt").write_text("normal", encoding="utf-8")
+
+            result = scan_directory(ScanOptions(root_path=root, calculate_hash=False))
+
+            self.assertIn("System Volume Information", DEFAULT_SKIP_DIRS)
+            self.assertIn("System Volume Information", default_settings().skip_dirs)
+            self.assertEqual({record.name for record in result.records}, {"normal.txt"})
+            self.assertEqual(result.summary.skip_reasons["skip dir name"], 1)
+
+    def test_permission_errors_are_displayed_as_friendly_messages(self):
+        message = _format_scan_error(PermissionError(13, "Access is denied"))
+
+        self.assertIn("无权限访问", message)
+        self.assertIn("跳过目录", message)
+
     def test_include_only_rules_filter_by_extension_keyword_and_type(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -230,6 +252,7 @@ class ScannerTests(unittest.TestCase):
             self.assertIn("private.txt", files_csv)
             self.assertNotIn(str(root), files_csv)
             self.assertNotIn(str(root), report_html)
+            self.assertIn("修改时间分布", report_html)
 
     def test_export_includes_scan_error_details(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -253,6 +276,9 @@ class ScannerTests(unittest.TestCase):
             self.assertIn("Permission denied", errors_csv)
             self.assertIn("扫描错误预览", report_html)
             self.assertIn("Permission denied", report_html)
+
+    def test_default_modified_time_month_setting_is_three(self):
+        self.assertEqual(default_settings().modified_time_months, 3)
 
 
 if __name__ == "__main__":

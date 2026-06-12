@@ -4,6 +4,14 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+DEFAULT_IGNORED_DIRS = (".git", "__pycache__", "node_modules", ".venv", "venv")
+DEFAULT_SKIP_DIRS = (
+    "System Volume Information",
+    "$RECYCLE.BIN",
+    "Recovery",
+    "Config.Msi",
+)
+
 
 @dataclass
 class ScanOptions:
@@ -20,11 +28,11 @@ class ScanOptions:
     detect_big_files: bool = True
     detect_time_anomalies: bool = True
     detect_long_paths: bool = True
-    ignored_dirs: tuple[str, ...] = (".git", "__pycache__", "node_modules", ".venv", "venv")
+    ignored_dirs: tuple[str, ...] = DEFAULT_IGNORED_DIRS
     whitelisted_extensions: tuple[str, ...] = ()
     skip_hidden_files: bool = False
     skip_large_files_mb: int = 0
-    skip_dirs: tuple[str, ...] = ()
+    skip_dirs: tuple[str, ...] = DEFAULT_SKIP_DIRS
     skip_file_names: tuple[str, ...] = ()
     skip_extensions: tuple[str, ...] = ()
     skip_path_keywords: tuple[str, ...] = ()

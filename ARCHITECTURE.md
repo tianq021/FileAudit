@@ -19,12 +19,17 @@ FileAudit/
 │  │  └─ exporter.py          # CSV 数据包和 HTML 图表报告导出
 │  ├─ services/
 │  │  └─ scan_worker.py       # QThread 后台扫描任务
-│  └─ ui/
-│     ├─ components.py        # 顶部栏、侧边栏、底部栏、统计卡片、条形图、环形图
-│     ├─ pages.py             # 扫描配置、概览、明细、重复、风险、错误、导出、设置页面
-│     └─ styles.py            # 全局 QSS 样式
+│  ├─ ui/
+│  │  ├─ components.py        # 顶部栏、侧边栏、底部栏、统计卡片、条形图、环形图
+│  │  ├─ pages.py             # 扫描配置、概览、明细、重复、风险、错误、导出、设置页面
+│  │  └─ styles.py            # 全局 QSS 样式
+│  └─ utils/
+│     ├─ distributions.py     # 文件类型、风险、重复、错误、大小、目录、时间等统计分布
+│     ├─ file_types.py        # 文件类型分类
+│     └─ formatters.py        # 大小、时间、风险、跳过原因等显示格式化
 ├─ tests/
-│  └─ test_scanner.py         # 扫描核心和报告导出测试
+│  ├─ test_scanner.py         # 扫描核心和报告导出测试
+│  └─ test_utils.py           # 公共工具函数测试
 ├─ docs/
 │  ├─ 官方文档.md             # PySide6/Qt 官方文档入口
 │  └─ 隐私与跳过规则临时方案.md # 隐私、跳过、只扫描和脱敏策略记录
@@ -102,6 +107,14 @@ FileAudit/
 
 报告导出只使用 Python 标准库，不依赖 `openpyxl` 或 `pandas`。导出函数支持 `export_full_paths`，可以在报告中隐藏完整路径，只保留文件名或目录名。
 
+### `fileaudit/utils/`
+
+跨 UI、扫描核心和报告导出的公共工具：
+
+- `file_types.py`：统一文件类型分类，供“只扫描文件类型”、概览图表和报告共用。
+- `formatters.py`：统一大小、时间、风险等级、风险原因和跳过原因的显示文案。
+- `distributions.py`：统一构建图表和报告使用的统计分布。
+
 ### `fileaudit/config/settings.py`
 
 负责应用设置：
@@ -109,6 +122,7 @@ FileAudit/
 - 默认扫描目录。
 - 默认报告目录。
 - 阈值和 Hash 算法。
+- 修改时间分布月份阈值。
 - 检测开关。
 - 忽略目录。
 - 可疑扩展名。
@@ -284,7 +298,6 @@ ExportPage
 
 ## 后续架构建议
 
-- 将 UI 和报告导出中重复的格式化函数抽到公共工具模块。
 - 将 `fileaudit/ui/pages.py` 按页面拆分，避免继续膨胀。
 - 大结果集表格改为虚拟模型。
 - 增加 Excel 多 Sheet 导出模块。

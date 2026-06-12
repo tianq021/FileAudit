@@ -1,6 +1,8 @@
 """Data models for FileAudit core features."""
 
 from fileaudit.models.scan import (
+    DEFAULT_IGNORED_DIRS,
+    DEFAULT_SKIP_DIRS,
     DuplicateGroup,
     FileRecord,
     ScanError,
@@ -10,6 +12,8 @@ from fileaudit.models.scan import (
 )
 
 __all__ = [
+    "DEFAULT_IGNORED_DIRS",
+    "DEFAULT_SKIP_DIRS",
     "DuplicateGroup",
     "FileRecord",
     "ScanError",

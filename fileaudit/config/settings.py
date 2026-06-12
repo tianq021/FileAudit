@@ -4,6 +4,8 @@ import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from fileaudit.models import DEFAULT_IGNORED_DIRS, DEFAULT_SKIP_DIRS
+
 
 SETTINGS_PATH = Path.home() / ".fileaudit" / "settings.json"
 
@@ -17,6 +19,7 @@ class AppSettings:
     hash_algorithm: str = "SHA256"
     big_file_threshold_mb: int = 100
     path_length_threshold: int = 180
+    modified_time_months: int = 3
     detect_suspicious_extensions: bool = True
     detect_double_extensions: bool = True
     detect_hidden_files: bool = True
@@ -24,10 +27,10 @@ class AppSettings:
     detect_big_files: bool = True
     detect_time_anomalies: bool = True
     detect_long_paths: bool = True
-    ignored_dirs: list[str] = field(default_factory=lambda: [".git", "__pycache__", "node_modules", ".venv", "venv"])
+    ignored_dirs: list[str] = field(default_factory=lambda: list(DEFAULT_IGNORED_DIRS))
     skip_hidden_files: bool = False
     skip_large_files_mb: int = 0
-    skip_dirs: list[str] = field(default_factory=list)
+    skip_dirs: list[str] = field(default_factory=lambda: list(DEFAULT_SKIP_DIRS))
     skip_file_names: list[str] = field(default_factory=list)
     skip_extensions: list[str] = field(default_factory=lambda: [".key", ".pem", ".pfx", ".kdbx", ".wallet"])
     skip_path_keywords: list[str] = field(default_factory=list)

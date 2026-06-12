@@ -28,6 +28,27 @@ from PySide6.QtWidgets import (
 from fileaudit.config import AppSettings, default_settings
 from fileaudit.ui.components import BarChart, DonutChart, StatCard
 from fileaudit.models import ScanOptions
+from fileaudit.utils import (
+    build_directory_size_distribution,
+    build_duplicate_extension_distribution,
+    build_duplicate_group_distribution,
+    build_error_directory_distribution,
+    build_extension_distribution,
+    build_file_type_distribution,
+    build_largest_files_distribution,
+    build_modified_time_distribution,
+    build_risk_distribution,
+    build_risk_directory_distribution,
+    build_risk_reason_distribution,
+    build_size_distribution,
+    build_skip_reason_distribution,
+    classify_file_type,
+    format_datetime,
+    format_risk_level,
+    format_risk_reasons,
+    format_size,
+    risk_sort_key,
+)
 
 INITIAL_TABLE_ROWS = 5000
 LOAD_MORE_ROWS = 1000
@@ -353,7 +374,19 @@ class OverviewPage(QWidget):
     def __init__(self):
         super().__init__()
         self.cards = {}
-        layout = QVBoxLayout(self)
+        self.modified_time_months = 3
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        content = QWidget()
+        content.setMinimumWidth(1040)
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(18)
 
@@ -375,6 +408,7 @@ class OverviewPage(QWidget):
 
         chart_tabs = QTabWidget()
         chart_tabs.setObjectName("ChartTabs")
+        chart_tabs.setMinimumHeight(620)
 
         summary_tab = QWidget()
         summary_layout = QGridLayout(summary_tab)
@@ -411,18 +445,24 @@ class OverviewPage(QWidget):
         self.extension_chart = BarChart("扩展名 Top 10", accent_color="#A855F7")
         self.size_chart = DonutChart("文件大小分布")
         self.risk_reason_chart = BarChart("风险原因 Top 10", accent_color="#EF4444")
+        self.risk_directory_chart = BarChart("风险目录 Top 10", accent_color="#F43F5E")
         self.skip_reason_chart = BarChart("跳过原因", accent_color="#F59E0B")
+        self.error_directory_chart = BarChart("扫描错误目录 Top 10", accent_color="#F97316")
         self.largest_files_chart = BarChart("最大文件 Top 10", format_size, "#38BDF8")
         self.duplicate_group_chart = BarChart("重复文件组 Top 10", format_size, "#FB7185")
+        self.duplicate_extension_chart = BarChart("重复扩展名 Top 10", accent_color="#C084FC")
         self.modified_time_chart = BarChart("修改时间分布", accent_color="#84CC16")
 
         for chart in [
             self.directory_chart,
             self.extension_chart,
             self.risk_reason_chart,
+            self.risk_directory_chart,
             self.skip_reason_chart,
+            self.error_directory_chart,
             self.largest_files_chart,
             self.duplicate_group_chart,
+            self.duplicate_extension_chart,
             self.modified_time_chart,
         ]:
             chart.setMinimumHeight(240)
@@ -433,11 +473,14 @@ class OverviewPage(QWidget):
         summary_layout.addWidget(self.extension_chart, 1, 1)
 
         risk_layout.addWidget(self.risk_reason_chart, 0, 0)
-        risk_layout.addWidget(self.skip_reason_chart, 0, 1)
+        risk_layout.addWidget(self.risk_directory_chart, 0, 1)
+        risk_layout.addWidget(self.skip_reason_chart, 1, 0)
+        risk_layout.addWidget(self.error_directory_chart, 1, 1)
 
         space_layout.addWidget(self.directory_chart, 0, 0, 1, 2)
         space_layout.addWidget(self.largest_files_chart, 1, 0)
         space_layout.addWidget(self.duplicate_group_chart, 1, 1)
+        space_layout.addWidget(self.duplicate_extension_chart, 2, 0, 1, 2)
 
         time_layout.addWidget(self.modified_time_chart, 0, 0)
 
@@ -449,6 +492,8 @@ class OverviewPage(QWidget):
         layout.addWidget(title)
         layout.addLayout(card_layout)
         layout.addWidget(chart_tabs, 1)
+        scroll.setWidget(content)
+        root_layout.addWidget(scroll)
 
     def update_result(self, result):
         summary = result.summary
@@ -464,10 +509,16 @@ class OverviewPage(QWidget):
         self.extension_chart.set_items(build_extension_distribution(result.records))
         self.size_chart.set_items(build_size_distribution(result.records), summary.total_files)
         self.risk_reason_chart.set_items(build_risk_reason_distribution(result.records))
+        self.risk_directory_chart.set_items(build_risk_directory_distribution(result.records))
         self.skip_reason_chart.set_items(build_skip_reason_distribution(summary.skip_reasons))
+        self.error_directory_chart.set_items(build_error_directory_distribution(result.errors))
         self.largest_files_chart.set_items(build_largest_files_distribution(result.records))
         self.duplicate_group_chart.set_items(build_duplicate_group_distribution(result.duplicate_groups))
-        self.modified_time_chart.set_items(build_modified_time_distribution(result.records), summary.total_files)
+        self.duplicate_extension_chart.set_items(build_duplicate_extension_distribution(result.duplicate_groups))
+        self.modified_time_chart.set_items(
+            build_modified_time_distribution(result.records, self.modified_time_months),
+            summary.total_files,
+        )
 
     def clear_result(self):
         self.cards["total_files"].set_value("0")
@@ -482,10 +533,16 @@ class OverviewPage(QWidget):
         self.extension_chart.set_items([])
         self.size_chart.set_items([])
         self.risk_reason_chart.set_items([])
+        self.risk_directory_chart.set_items([])
         self.skip_reason_chart.set_items([])
+        self.error_directory_chart.set_items([])
         self.largest_files_chart.set_items([])
         self.duplicate_group_chart.set_items([])
+        self.duplicate_extension_chart.set_items([])
         self.modified_time_chart.set_items([])
+
+    def apply_settings(self, settings: AppSettings):
+        self.modified_time_months = max(1, settings.modified_time_months)
 
 
 class FileDetailPage(QWidget):
@@ -902,6 +959,7 @@ class SettingsPage(QWidget):
         self.report_dir_input = QLineEdit()
         self.big_file_input = QLineEdit()
         self.path_length_input = QLineEdit()
+        self.modified_time_months_input = QLineEdit()
         self.hash_select = QComboBox()
         self.option_checks = {}
         self.ignored_dirs_edit = QTextEdit()
@@ -956,10 +1014,13 @@ class SettingsPage(QWidget):
         self.hash_select.addItems(["SHA256", "MD5", "SHA1(不推荐)"])
         self.big_file_input.setFixedWidth(100)
         self.path_length_input.setFixedWidth(100)
+        self.modified_time_months_input.setFixedWidth(100)
         self.skip_large_files_input.setFixedWidth(100)
         int_validator = QIntValidator(0, 2147483647, self)
+        month_validator = QIntValidator(1, 120, self)
         self.big_file_input.setValidator(int_validator)
         self.path_length_input.setValidator(int_validator)
+        self.modified_time_months_input.setValidator(month_validator)
         self.skip_large_files_input.setValidator(int_validator)
         scan_layout.addWidget(QLabel("大文件阈值："), 0, 0)
         scan_layout.addWidget(self.big_file_input, 0, 1)
@@ -969,6 +1030,9 @@ class SettingsPage(QWidget):
         scan_layout.addWidget(QLabel("字符"), 0, 5)
         scan_layout.addWidget(QLabel("Hash 算法："), 0, 6)
         scan_layout.addWidget(self.hash_select, 0, 7)
+        scan_layout.addWidget(QLabel("修改时间分类："), 1, 0)
+        scan_layout.addWidget(self.modified_time_months_input, 1, 1)
+        scan_layout.addWidget(QLabel("个月内"), 1, 2)
 
         options = [
             ("recursive", "递归扫描子目录"),
@@ -984,7 +1048,7 @@ class SettingsPage(QWidget):
         for index, (key, text) in enumerate(options):
             checkbox = QCheckBox(text)
             self.option_checks[key] = checkbox
-            scan_layout.addWidget(checkbox, 1 + index // 3, index % 3)
+            scan_layout.addWidget(checkbox, 2 + index // 3, index % 3)
 
         rule_box = QFrame()
         rule_box.setObjectName("Panel")
@@ -1093,6 +1157,7 @@ class SettingsPage(QWidget):
         self.report_dir_input.setToolTip(settings.default_report_dir)
         self.big_file_input.setText(str(settings.big_file_threshold_mb))
         self.path_length_input.setText(str(settings.path_length_threshold))
+        self.modified_time_months_input.setText(str(settings.modified_time_months))
         self.hash_select.setCurrentText(settings.hash_algorithm)
         for key in self.option_checks:
             self.option_checks[key].setChecked(getattr(settings, key))
@@ -1122,6 +1187,7 @@ class SettingsPage(QWidget):
             hash_algorithm=self.hash_select.currentText(),
             big_file_threshold_mb=parse_positive_int(self.big_file_input.text(), 100, "大文件阈值"),
             path_length_threshold=parse_positive_int(self.path_length_input.text(), 180, "路径过长阈值"),
+            modified_time_months=parse_min_int(self.modified_time_months_input.text(), 3, "修改时间分类月份", 1),
             detect_suspicious_extensions=self.option_checks["detect_suspicious_extensions"].isChecked(),
             detect_double_extensions=self.option_checks["detect_double_extensions"].isChecked(),
             detect_hidden_files=self.option_checks["detect_hidden_files"].isChecked(),
@@ -1217,52 +1283,19 @@ def parse_positive_int(text: str, default: int, field_name: str) -> int:
     return value
 
 
+def parse_min_int(text: str, default: int, field_name: str, minimum: int) -> int:
+    value = parse_positive_int(text, default, field_name)
+    if value < minimum:
+        raise ValueError(f"{field_name}不能小于 {minimum}。")
+    return value
+
+
 def include_conflict_policy_value(text: str) -> str:
     return "include_wins" if text == "只扫描规则优先" else "skip_wins"
 
 
 def include_conflict_policy_label(value: str) -> str:
     return "只扫描规则优先" if value == "include_wins" else "跳过规则优先"
-
-
-def format_size(size: int) -> str:
-    value = float(size)
-    for unit in ["B", "KB", "MB", "GB", "TB"]:
-        if value < 1024 or unit == "TB":
-            if unit == "B":
-                return f"{int(value)} {unit}"
-            return f"{value:.1f} {unit}"
-        value /= 1024
-
-
-def format_datetime(value) -> str:
-    return value.strftime("%Y-%m-%d %H:%M:%S")
-
-
-def format_risk_level(level: str) -> str:
-    names = {
-        "high": "高风险",
-        "medium": "中风险",
-        "low": "低风险",
-        "normal": "正常",
-    }
-    return names.get(level, level)
-
-
-def format_risk_reasons(reasons: list[str]) -> str:
-    names = {
-        "suspicious extension": "可疑扩展名",
-        "script file": "脚本文件",
-        "double extension": "双扩展名伪装",
-        "hidden file": "隐藏文件",
-        "empty file": "空文件",
-        "big file": "大文件",
-        "large file without extension": "无扩展名大文件",
-        "temporary file": "临时/备份文件",
-        "time anomaly": "时间异常",
-        "long path": "路径过长",
-    }
-    return "，".join(names.get(reason, reason) for reason in reasons)
 
 
 def risk_filter_value(text: str) -> str:
@@ -1288,189 +1321,3 @@ def file_detail_sort_key(record, column_index: int):
         8: lambda item: item.hash_value,
     }
     return keys.get(column_index, keys[0])(record)
-
-
-def risk_sort_key(level: str) -> int:
-    order = {
-        "high": 0,
-        "medium": 1,
-        "low": 2,
-        "normal": 3,
-    }
-    return order.get(level, 9)
-
-
-def classify_file_type(extension: str) -> str:
-    extension = extension.lower()
-    groups = {
-        "文档": {
-            ".csv",
-            ".doc",
-            ".docx",
-            ".md",
-            ".pdf",
-            ".ppt",
-            ".pptx",
-            ".rtf",
-            ".txt",
-            ".xls",
-            ".xlsx",
-        },
-        "图片": {".bmp", ".gif", ".jpeg", ".jpg", ".png", ".svg", ".tif", ".tiff", ".webp"},
-        "音视频": {".aac", ".avi", ".flac", ".m4a", ".mkv", ".mov", ".mp3", ".mp4", ".wav", ".webm", ".wmv"},
-        "压缩包": {".7z", ".gz", ".rar", ".tar", ".tgz", ".zip"},
-        "代码": {
-            ".bat",
-            ".cmd",
-            ".css",
-            ".go",
-            ".html",
-            ".java",
-            ".js",
-            ".json",
-            ".py",
-            ".rs",
-            ".sh",
-            ".ts",
-            ".xml",
-            ".yaml",
-            ".yml",
-        },
-        "可执行": {".com", ".dll", ".exe", ".msi", ".scr"},
-    }
-    for name, extensions in groups.items():
-        if extension in extensions:
-            return name
-    return "其他"
-
-
-def build_file_type_distribution(records) -> list[tuple[str, int]]:
-    counts = {}
-    for record in records:
-        file_type = classify_file_type(record.extension)
-        counts[file_type] = counts.get(file_type, 0) + 1
-    return sorted(counts.items(), key=lambda item: item[1], reverse=True)
-
-
-def build_risk_distribution(risk_counts: dict[str, int]) -> list[tuple[str, int]]:
-    order = ["high", "medium", "low", "normal"]
-    return [
-        (format_risk_level(level), risk_counts.get(level, 0))
-        for level in order
-        if risk_counts.get(level, 0)
-    ]
-
-
-def build_extension_distribution(records) -> list[tuple[str, int]]:
-    counts = {}
-    for record in records:
-        extension = record.extension or "[无扩展名]"
-        counts[extension] = counts.get(extension, 0) + 1
-    return sorted(counts.items(), key=lambda item: item[1], reverse=True)[:10]
-
-
-def build_size_distribution(records) -> list[tuple[str, int]]:
-    buckets = {
-        "空文件": 0,
-        "< 1 MB": 0,
-        "1-10 MB": 0,
-        "10-100 MB": 0,
-        "100 MB-1 GB": 0,
-        ">= 1 GB": 0,
-    }
-    for record in records:
-        size = record.size
-        if size == 0:
-            buckets["空文件"] += 1
-        elif size < 1024 * 1024:
-            buckets["< 1 MB"] += 1
-        elif size < 10 * 1024 * 1024:
-            buckets["1-10 MB"] += 1
-        elif size < 100 * 1024 * 1024:
-            buckets["10-100 MB"] += 1
-        elif size < 1024 * 1024 * 1024:
-            buckets["100 MB-1 GB"] += 1
-        else:
-            buckets[">= 1 GB"] += 1
-    return [(label, count) for label, count in buckets.items() if count]
-
-
-def build_risk_reason_distribution(records) -> list[tuple[str, int]]:
-    counts = {}
-    for record in records:
-        for reason in record.risk_reasons:
-            label = format_risk_reasons([reason])
-            counts[label] = counts.get(label, 0) + 1
-    return sorted(counts.items(), key=lambda item: item[1], reverse=True)[:10]
-
-
-def build_skip_reason_distribution(skip_reasons: dict[str, int]) -> list[tuple[str, int]]:
-    return [
-        (format_skip_reason(reason), count)
-        for reason, count in sorted(skip_reasons.items(), key=lambda item: item[1], reverse=True)
-    ]
-
-
-def build_largest_files_distribution(records) -> list[tuple[str, int]]:
-    largest_records = sorted(records, key=lambda record: record.size, reverse=True)[:10]
-    return [(record.name, record.size) for record in largest_records]
-
-
-def build_duplicate_group_distribution(duplicate_groups) -> list[tuple[str, int]]:
-    rows = []
-    for index, group in enumerate(duplicate_groups[:10], start=1):
-        label = f"第 {index} 组（{len(group.files)} 个）"
-        rows.append((label, group.wasted_size))
-    return rows
-
-
-def build_modified_time_distribution(records) -> list[tuple[str, int]]:
-    from datetime import datetime, timedelta
-
-    now = datetime.now()
-    buckets = {
-        "今天": 0,
-        "7 天内": 0,
-        "30 天内": 0,
-        "1 年内": 0,
-        "更早": 0,
-        "未来时间": 0,
-    }
-    for record in records:
-        modified_at = record.modified_at
-        if modified_at > now:
-            buckets["未来时间"] += 1
-        elif modified_at.date() == now.date():
-            buckets["今天"] += 1
-        elif modified_at >= now - timedelta(days=7):
-            buckets["7 天内"] += 1
-        elif modified_at >= now - timedelta(days=30):
-            buckets["30 天内"] += 1
-        elif modified_at >= now - timedelta(days=365):
-            buckets["1 年内"] += 1
-        else:
-            buckets["更早"] += 1
-    return [(label, count) for label, count in buckets.items() if count]
-
-
-def build_directory_size_distribution(records) -> list[tuple[str, int]]:
-    sizes = {}
-    for record in records:
-        directory = str(record.parent)
-        sizes[directory] = sizes.get(directory, 0) + record.size
-    top_items = sorted(sizes.items(), key=lambda item: item[1], reverse=True)[:10]
-    return [(path, size) for path, size in top_items]
-
-
-def format_skip_reason(reason: str) -> str:
-    names = {
-        "skip dir name": "目录名",
-        "skip dir path keyword": "目录路径关键词",
-        "skip file name": "文件名",
-        "skip path keyword": "路径关键词",
-        "skip extension": "扩展名",
-        "skip hidden file": "隐藏文件",
-        "skip large file": "大文件",
-        "skip include unmatched": "未匹配只扫描规则",
-    }
-    return names.get(reason, reason)
