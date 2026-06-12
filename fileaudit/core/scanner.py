@@ -14,8 +14,28 @@ ProgressCallback = Callable[[int, Path], None]
 StageProgressCallback = Callable[[str, int, int, Path], None]
 CancelCallback = Callable[[], bool]
 
-HIGH_RISK_REASONS = {"suspicious extension", "double extension"}
-MEDIUM_RISK_REASONS = {"hidden file", "time anomaly", "long path"}
+HIGH_RISK_REASONS = {"double extension"}
+MEDIUM_RISK_REASONS = {"script file", "hidden file", "time anomaly", "long path", "large file without extension"}
+LOW_RISK_REASONS = {"suspicious extension", "temporary file", "empty file", "big file"}
+SCRIPT_EXTENSIONS = {".bat", ".cmd", ".jse", ".ps1", ".vbe", ".vbs", ".wsf"}
+TEMPORARY_EXTENSIONS = {".tmp", ".temp", ".cache", ".bak", ".old"}
+DECOY_EXTENSIONS = {
+    ".7z",
+    ".csv",
+    ".doc",
+    ".docx",
+    ".gif",
+    ".jpeg",
+    ".jpg",
+    ".pdf",
+    ".png",
+    ".rar",
+    ".rtf",
+    ".txt",
+    ".xls",
+    ".xlsx",
+    ".zip",
+}
 
 
 class ScanCanceled(Exception):
@@ -32,6 +52,7 @@ def scan_directory(
     started_at = datetime.now()
     records: list[FileRecord] = []
     errors: list[ScanError] = []
+    skip_reasons: Counter[str] = Counter()
     total_dirs = 0
     canceled = False
 
@@ -46,8 +67,9 @@ def scan_directory(
             break
 
         current_path = Path(current_root)
-        dir_names[:] = _filter_dirs(dir_names, options.ignored_dirs)
-        total_dirs += len(dir_names)
+        total_dirs += 1
+        skipped_dirs = _filter_dirs(current_path, dir_names, options)
+        skip_reasons.update(skipped_dirs)
 
         if not options.recursive:
             dir_names[:] = []
@@ -58,6 +80,15 @@ def scan_directory(
                 break
 
             file_path = current_path / file_name
+            skip_reason = _file_skip_reason(file_path, options)
+            include_matched = _file_matches_include_rules(file_path, options)
+            if skip_reason and (options.include_conflict_policy != "include_wins" or not include_matched):
+                skip_reasons[skip_reason] += 1
+                continue
+            if not include_matched:
+                skip_reasons["skip include unmatched"] += 1
+                continue
+
             try:
                 record = _build_record(file_path, options)
             except OSError as error:
@@ -78,13 +109,30 @@ def scan_directory(
     )
     if should_cancel and should_cancel():
         canceled = True
-    summary = _build_summary(root_path, started_at, records, duplicate_groups, errors, total_dirs, canceled)
+    summary = _build_summary(root_path, started_at, records, duplicate_groups, errors, total_dirs, canceled, skip_reasons)
     return ScanResult(records, duplicate_groups, errors, summary)
 
 
-def _filter_dirs(dir_names: list[str], ignored_dirs: tuple[str, ...]) -> list[str]:
-    ignored = {name.lower() for name in ignored_dirs}
-    return [name for name in dir_names if name.lower() not in ignored]
+def _filter_dirs(current_path: Path, dir_names: list[str], options: ScanOptions) -> Counter[str]:
+    skipped: Counter[str] = Counter()
+    kept: list[str] = []
+    ignored = {name.lower() for name in options.ignored_dirs}
+    skip_dirs = ignored | {name.lower() for name in options.skip_dirs}
+    keywords = _normalized_keywords(options.skip_path_keywords)
+
+    for name in dir_names:
+        child_path = current_path / name
+        child_path_text = str(child_path).lower()
+        if name.lower() in skip_dirs:
+            skipped["skip dir name"] += 1
+            continue
+        if any(keyword in child_path_text for keyword in keywords):
+            skipped["skip dir path keyword"] += 1
+            continue
+        kept.append(name)
+
+    dir_names[:] = kept
+    return skipped
 
 
 def _record_walk_error(error: OSError, errors: list[ScanError]) -> None:
@@ -108,6 +156,106 @@ def _build_record(file_path: Path, options: ScanOptions) -> FileRecord:
     return record
 
 
+def _file_skip_reason(file_path: Path, options: ScanOptions) -> str:
+    if options.skip_file_names and file_path.name.lower() in {name.lower() for name in options.skip_file_names}:
+        return "skip file name"
+
+    keywords = _normalized_keywords(options.skip_path_keywords)
+    if keywords and any(keyword in str(file_path).lower() for keyword in keywords):
+        return "skip path keyword"
+
+    skip_extensions = {extension.lower() for extension in options.skip_extensions}
+    if file_path.suffix.lower() in skip_extensions:
+        return "skip extension"
+
+    if options.skip_hidden_files and _is_hidden(file_path):
+        return "skip hidden file"
+
+    if options.skip_large_files_mb > 0:
+        try:
+            if file_path.stat().st_size >= options.skip_large_files_mb * 1024 * 1024:
+                return "skip large file"
+        except OSError:
+            return ""
+
+    return ""
+
+
+def _file_matches_include_rules(file_path: Path, options: ScanOptions) -> bool:
+    if not options.include_only_matched:
+        return True
+
+    name = file_path.name.lower()
+    path_text = str(file_path).lower()
+    extension = file_path.suffix.lower()
+
+    include_extensions = {item.lower() for item in options.include_extensions}
+    if include_extensions and extension in include_extensions:
+        return True
+
+    name_keywords = _normalized_keywords(options.include_name_keywords)
+    if name_keywords and any(keyword in name for keyword in name_keywords):
+        return True
+
+    path_keywords = _normalized_keywords(options.include_path_keywords)
+    if path_keywords and any(keyword in path_text for keyword in path_keywords):
+        return True
+
+    file_types = {item.strip() for item in options.include_file_types if item.strip()}
+    if file_types and _classify_file_type(extension) in file_types:
+        return True
+
+    return False
+
+
+def _normalized_keywords(keywords: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(keyword.lower() for keyword in keywords if keyword)
+
+
+def _classify_file_type(extension: str) -> str:
+    extension = extension.lower()
+    groups = {
+        "文档": {
+            ".csv",
+            ".doc",
+            ".docx",
+            ".md",
+            ".pdf",
+            ".ppt",
+            ".pptx",
+            ".rtf",
+            ".txt",
+            ".xls",
+            ".xlsx",
+        },
+        "图片": {".bmp", ".gif", ".jpeg", ".jpg", ".png", ".svg", ".tif", ".tiff", ".webp"},
+        "音视频": {".aac", ".avi", ".flac", ".m4a", ".mkv", ".mov", ".mp3", ".mp4", ".wav", ".webm", ".wmv"},
+        "压缩包": {".7z", ".gz", ".rar", ".tar", ".tgz", ".zip"},
+        "代码": {
+            ".bat",
+            ".cmd",
+            ".css",
+            ".go",
+            ".html",
+            ".java",
+            ".js",
+            ".json",
+            ".py",
+            ".rs",
+            ".sh",
+            ".ts",
+            ".xml",
+            ".yaml",
+            ".yml",
+        },
+        "可执行": {".com", ".dll", ".exe", ".msi", ".scr"},
+    }
+    for name, extensions in groups.items():
+        if extension in extensions:
+            return name
+    return "其他"
+
+
 def _apply_risk_rules(record: FileRecord, options: ScanOptions) -> None:
     suspicious_extensions = {extension.lower() for extension in options.suspicious_extensions}
     whitelisted_extensions = {extension.lower() for extension in options.whitelisted_extensions}
@@ -116,6 +264,8 @@ def _apply_risk_rules(record: FileRecord, options: ScanOptions) -> None:
 
     if options.detect_suspicious_extensions and not extension_is_whitelisted and record.extension in suspicious_extensions:
         record.risk_reasons.append("suspicious extension")
+        if record.extension in SCRIPT_EXTENSIONS:
+            record.risk_reasons.append("script file")
 
     if options.detect_double_extensions and not extension_is_whitelisted and _has_double_extension(record.path, suspicious_extensions):
         record.risk_reasons.append("double extension")
@@ -128,6 +278,11 @@ def _apply_risk_rules(record: FileRecord, options: ScanOptions) -> None:
 
     if options.detect_big_files and threshold_bytes and record.size >= threshold_bytes:
         record.risk_reasons.append("big file")
+        if not record.extension:
+            record.risk_reasons.append("large file without extension")
+
+    if _is_temporary_file(record):
+        record.risk_reasons.append("temporary file")
 
     if options.detect_time_anomalies and record.modified_at.timestamp() > datetime.now().timestamp() + 300:
         record.risk_reasons.append("time anomaly")
@@ -142,7 +297,7 @@ def _has_double_extension(file_path: Path, suspicious_extensions: set[str]) -> b
     suffixes = [suffix.lower() for suffix in file_path.suffixes]
     if len(suffixes) < 2:
         return False
-    return suffixes[-1] in suspicious_extensions
+    return suffixes[-1] in suspicious_extensions and suffixes[-2] in DECOY_EXTENSIONS
 
 
 def _risk_level(reasons: list[str]) -> str:
@@ -150,9 +305,13 @@ def _risk_level(reasons: list[str]) -> str:
         return "high"
     if any(reason in MEDIUM_RISK_REASONS for reason in reasons):
         return "medium"
-    if reasons:
+    if any(reason in LOW_RISK_REASONS for reason in reasons):
         return "low"
     return "normal"
+
+
+def _is_temporary_file(record: FileRecord) -> bool:
+    return record.extension in TEMPORARY_EXTENSIONS or record.name.endswith("~")
 
 
 def _is_hidden(file_path: Path) -> bool:
@@ -247,6 +406,7 @@ def _build_summary(
     errors: list[ScanError],
     total_dirs: int,
     canceled: bool,
+    skip_reasons: Counter[str],
 ) -> ScanSummary:
     extension_counts = Counter(record.extension or "[none]" for record in records)
     risk_counts = Counter(record.risk_level for record in records)
@@ -265,6 +425,9 @@ def _build_summary(
         duplicate_wasted_size=sum(group.wasted_size for group in duplicate_groups),
         risk_files=sum(1 for record in records if record.risk_level != "normal"),
         error_count=len(errors),
+        skipped_files=sum(count for reason, count in skip_reasons.items() if reason.startswith("skip ") and "dir" not in reason),
+        skipped_dirs=sum(count for reason, count in skip_reasons.items() if "dir" in reason),
+        skip_reasons=dict(skip_reasons),
         extension_counts=dict(extension_counts),
         risk_counts=dict(risk_counts),
     )

@@ -9,6 +9,7 @@ from fileaudit.services import ScanWorker
 from fileaudit.ui.components import BottomBar, Sidebar, TopBar
 from fileaudit.ui.pages import (
     DuplicatePage,
+    ErrorPage,
     ExportPage,
     FileDetailPage,
     OverviewPage,
@@ -39,6 +40,7 @@ class MainWindow(QMainWindow):
         self.scan_config_page.folder_selected.connect(self.on_folder_selected)
         self.scan_config_page.scan_requested.connect(self.on_scan_requested)
         self.scan_config_page.cancel_requested.connect(self.on_cancel_requested)
+        self.scan_config_page.clear_requested.connect(self.on_clear_requested)
 
         self._setup_pages()
         self.sidebar = Sidebar(self.pages.setCurrentIndex)
@@ -57,6 +59,8 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self.duplicate_page)
         self.risk_page = RiskPage()
         self.pages.addWidget(self.risk_page)
+        self.error_page = ErrorPage()
+        self.pages.addWidget(self.error_page)
         self.export_page = ExportPage()
         self.export_page.export_requested.connect(self.on_export_requested)
         self.pages.addWidget(self.export_page)
@@ -99,8 +103,8 @@ class MainWindow(QMainWindow):
 
         try:
             options = self.scan_config_page.get_scan_options()
-        except ValueError:
-            QMessageBox.warning(self, "扫描配置错误", "大文件阈值需要填写数字。")
+        except ValueError as error:
+            QMessageBox.warning(self, "扫描配置错误", str(error))
             return
 
         self.current_path = str(options.root_path)
@@ -132,6 +136,7 @@ class MainWindow(QMainWindow):
         self.file_detail_page.update_result(result)
         self.duplicate_page.update_result(result)
         self.risk_page.update_result(result)
+        self.error_page.update_result(result)
         status_text = "已取消" if summary.canceled else "完成"
         self.top_bar.set_status(f"状态：扫描{status_text}")
         self.sidebar.set_info(status_text, summary.risk_files, summary.duplicate_files, str(summary.root_path))
@@ -152,6 +157,23 @@ class MainWindow(QMainWindow):
         self.top_bar.set_status("状态：正在取消")
         self.sidebar.set_info("正在取消", scan_path=self.current_path)
         self.bottom_bar.set_message("正在取消扫描，将保留已经扫描到的文件信息")
+
+    def on_clear_requested(self):
+        if self.scan_worker and self.scan_worker.isRunning():
+            QMessageBox.warning(self, "无法清空", "扫描正在进行中，请先取消或等待扫描完成。")
+            return
+
+        self.scan_result = None
+        self.overview_page.clear_result()
+        self.file_detail_page.clear_result()
+        self.duplicate_page.clear_result()
+        self.risk_page.clear_result()
+        self.error_page.clear_result()
+        self.top_bar.set_status("状态：未扫描")
+        self.sidebar.set_info("未开始", scan_path=self.current_path)
+        self.bottom_bar.set_busy(False)
+        self.bottom_bar.set_progress(0)
+        self.bottom_bar.set_message("扫描结果已清空")
 
     def on_scan_failed(self, message: str):
         self.top_bar.set_status("状态：扫描失败")
@@ -197,7 +219,7 @@ class MainWindow(QMainWindow):
 
         output_dir = Path(folder) / default_dir.name
         try:
-            report_path = export_report_bundle(self.scan_result, output_dir)
+            report_path = export_report_bundle(self.scan_result, output_dir, export_full_paths=self.settings.export_full_paths)
         except OSError as error:
             QMessageBox.warning(self, "导出失败", str(error))
             return

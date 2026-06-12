@@ -25,6 +25,19 @@ class AppSettings:
     detect_time_anomalies: bool = True
     detect_long_paths: bool = True
     ignored_dirs: list[str] = field(default_factory=lambda: [".git", "__pycache__", "node_modules", ".venv", "venv"])
+    skip_hidden_files: bool = False
+    skip_large_files_mb: int = 0
+    skip_dirs: list[str] = field(default_factory=list)
+    skip_file_names: list[str] = field(default_factory=list)
+    skip_extensions: list[str] = field(default_factory=lambda: [".key", ".pem", ".pfx", ".kdbx", ".wallet"])
+    skip_path_keywords: list[str] = field(default_factory=list)
+    include_only_matched: bool = False
+    include_conflict_policy: str = "skip_wins"
+    include_extensions: list[str] = field(default_factory=list)
+    include_name_keywords: list[str] = field(default_factory=list)
+    include_path_keywords: list[str] = field(default_factory=list)
+    include_file_types: list[str] = field(default_factory=list)
+    export_full_paths: bool = True
     suspicious_extensions: list[str] = field(
         default_factory=lambda: [
             ".bat",

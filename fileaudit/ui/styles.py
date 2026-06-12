@@ -133,6 +133,30 @@ APP_STYLE = """
         font-size: 14px;
     }
 
+    QTabWidget::pane {
+        border: none;
+        margin-top: 12px;
+    }
+
+    QTabBar::tab {
+        background-color: #1F2937;
+        color: #D1D5DB;
+        border: 1px solid #374151;
+        border-radius: 8px;
+        padding: 9px 18px;
+        margin-right: 8px;
+    }
+
+    QTabBar::tab:selected {
+        background-color: #2563EB;
+        color: #FFFFFF;
+        font-weight: bold;
+    }
+
+    QTabBar::tab:hover {
+        background-color: #374151;
+    }
+
     QTableWidget {
         background-color: #111827;
         color: #E5E7EB;

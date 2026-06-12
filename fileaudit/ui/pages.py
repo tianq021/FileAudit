@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QIntValidator
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -13,17 +14,19 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QStyle,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
 from fileaudit.config import AppSettings, default_settings
-from fileaudit.ui.components import BarChart, StatCard
+from fileaudit.ui.components import BarChart, DonutChart, StatCard
 from fileaudit.models import ScanOptions
 
 INITIAL_TABLE_ROWS = 5000
@@ -34,6 +37,7 @@ class ScanConfigPage(QWidget):
     folder_selected = Signal(str)
     scan_requested = Signal()
     cancel_requested = Signal()
+    clear_requested = Signal()
 
     def __init__(self):
         super().__init__()
@@ -44,11 +48,31 @@ class ScanConfigPage(QWidget):
         self.ignored_dirs_edit = QTextEdit()
         self.suspicious_extensions_edit = QTextEdit()
         self.whitelisted_extensions_edit = QTextEdit()
+        self.skip_hidden_files_check = QCheckBox("跳过隐藏文件")
+        self.skip_large_files_input = QLineEdit("0")
+        self.skip_dirs_edit = QTextEdit()
+        self.skip_file_names_edit = QTextEdit()
+        self.skip_extensions_edit = QTextEdit()
+        self.skip_path_keywords_edit = QTextEdit()
+        self.include_only_matched_check = QCheckBox("只扫描匹配规则的文件")
+        self.include_conflict_select = QComboBox()
+        self.include_extensions_edit = QTextEdit()
+        self.include_name_keywords_edit = QTextEdit()
+        self.include_path_keywords_edit = QTextEdit()
+        self.include_file_types_edit = QTextEdit()
+        self.scan_all_radio = QRadioButton("全部扫描")
+        self.include_only_radio = QRadioButton("只扫描匹配规则")
         self.option_checks = {}
         self._setup_ui()
 
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(18)
 
@@ -64,7 +88,7 @@ class ScanConfigPage(QWidget):
         title_row.addWidget(title)
         title_row.addStretch()
 
-        desc = QLabel("选择要分析的文件夹，设置扫描规则，然后开始文件体检。")
+        desc = QLabel("选择要分析的文件夹，然后开始文件体检。高级规则可在“设置”页调整。")
         desc.setObjectName("PageDesc")
 
         path_row = QHBoxLayout()
@@ -80,13 +104,31 @@ class ScanConfigPage(QWidget):
         path_row.addWidget(self.path_input, 1)
         path_row.addWidget(choose_btn)
 
+        mode_box = QFrame()
+        mode_box.setObjectName("Panel")
+        mode_layout = QVBoxLayout(mode_box)
+        mode_layout.setSpacing(10)
+        mode_title = QLabel("扫描范围")
+        mode_title.setObjectName("PageDesc")
+        self.scan_all_radio.setChecked(True)
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(self.scan_all_radio)
+        mode_row.addWidget(self.include_only_radio)
+        mode_row.addStretch()
+        mode_hint = QLabel("默认全部扫描；选择“只扫描匹配规则”时，会使用设置页里的只扫描规则。")
+        mode_hint.setObjectName("PageDesc")
+        mode_hint.setWordWrap(True)
+        mode_layout.addWidget(mode_title)
+        mode_layout.addLayout(mode_row)
+        mode_layout.addWidget(mode_hint)
+
         option_box = QFrame()
         option_box.setObjectName("Panel")
         option_layout = QGridLayout(option_box)
 
         options = [
             ("recursive", "递归扫描子目录"),
-            ("calculate_hash", "计算 SHA256 用于重复检测"),
+            ("calculate_hash", "查找重复文件"),
             ("detect_suspicious_extensions", "检测可疑扩展名"),
             ("detect_double_extensions", "检测双扩展名伪装"),
             ("detect_hidden_files", "检测隐藏文件"),
@@ -100,11 +142,17 @@ class ScanConfigPage(QWidget):
             checkbox = QCheckBox(text)
             checkbox.setChecked(True)
             self.option_checks[key] = checkbox
-            option_layout.addWidget(checkbox, index // 3, index % 3)
+            if key in {"recursive", "calculate_hash"}:
+                option_layout.addWidget(checkbox, 0, 0 if key == "recursive" else 1)
 
         setting_row = QHBoxLayout()
         self.big_file_input.setFixedWidth(90)
         self.path_length_input.setFixedWidth(90)
+        self.skip_large_files_input.setFixedWidth(90)
+        int_validator = QIntValidator(0, 2147483647, self)
+        self.big_file_input.setValidator(int_validator)
+        self.path_length_input.setValidator(int_validator)
+        self.skip_large_files_input.setValidator(int_validator)
         self.hash_select.addItems(["SHA256", "MD5", "SHA1(不推荐)"])
 
         setting_row.addWidget(QLabel("大文件阈值："))
@@ -131,6 +179,73 @@ class ScanConfigPage(QWidget):
         rule_layout.addWidget(self.suspicious_extensions_edit, 1, 1)
         rule_layout.addWidget(self.whitelisted_extensions_edit, 1, 2)
 
+        privacy_box = QFrame()
+        privacy_box.setObjectName("Panel")
+        privacy_layout = QVBoxLayout(privacy_box)
+        privacy_layout.setSpacing(12)
+        privacy_top_row = QHBoxLayout()
+        privacy_grid = QGridLayout()
+        privacy_grid.setHorizontalSpacing(16)
+        privacy_grid.setVerticalSpacing(8)
+        for edit in [self.skip_dirs_edit, self.skip_file_names_edit, self.skip_extensions_edit, self.skip_path_keywords_edit]:
+            edit.setFixedHeight(82)
+        privacy_top_row.addWidget(self.skip_hidden_files_check)
+        privacy_top_row.addSpacing(24)
+        privacy_top_row.addWidget(QLabel("跳过大于等于："))
+        privacy_top_row.addWidget(self.skip_large_files_input)
+        privacy_top_row.addWidget(QLabel("MB 的文件（0 表示不跳过）"))
+        privacy_top_row.addStretch()
+        privacy_grid.addWidget(QLabel("跳过目录名（每行一个）："), 0, 0)
+        privacy_grid.addWidget(QLabel("跳过文件名（每行一个）："), 0, 1)
+        privacy_grid.addWidget(self.skip_dirs_edit, 1, 0)
+        privacy_grid.addWidget(self.skip_file_names_edit, 1, 1)
+        privacy_grid.addWidget(QLabel("跳过扩展名（每行一个）："), 2, 0)
+        privacy_grid.addWidget(QLabel("跳过路径关键词（每行一个）："), 2, 1)
+        privacy_grid.addWidget(self.skip_extensions_edit, 3, 0)
+        privacy_grid.addWidget(self.skip_path_keywords_edit, 3, 1)
+        privacy_layout.addLayout(privacy_top_row)
+        privacy_layout.addLayout(privacy_grid)
+
+        include_box = QFrame()
+        include_box.setObjectName("Panel")
+        include_layout = QVBoxLayout(include_box)
+        include_layout.setSpacing(12)
+        include_top_row = QHBoxLayout()
+        include_grid = QGridLayout()
+        include_grid.setHorizontalSpacing(16)
+        include_grid.setVerticalSpacing(8)
+        self.include_conflict_select.addItems(["跳过规则优先", "只扫描规则优先"])
+        for edit in [
+            self.include_extensions_edit,
+            self.include_name_keywords_edit,
+            self.include_path_keywords_edit,
+            self.include_file_types_edit,
+        ]:
+            edit.setFixedHeight(82)
+        include_top_row.addWidget(self.include_only_matched_check)
+        include_top_row.addSpacing(24)
+        include_top_row.addWidget(QLabel("规则冲突时："))
+        include_top_row.addWidget(self.include_conflict_select)
+        include_top_row.addStretch()
+        include_grid.addWidget(QLabel("只扫描扩展名（每行一个）："), 0, 0)
+        include_grid.addWidget(QLabel("只扫描文件名关键词（每行一个）："), 0, 1)
+        include_grid.addWidget(self.include_extensions_edit, 1, 0)
+        include_grid.addWidget(self.include_name_keywords_edit, 1, 1)
+        include_grid.addWidget(QLabel("只扫描路径关键词（每行一个）："), 2, 0)
+        include_grid.addWidget(QLabel("只扫描文件类型（每行一个）："), 2, 1)
+        include_grid.addWidget(self.include_path_keywords_edit, 3, 0)
+        include_grid.addWidget(self.include_file_types_edit, 3, 1)
+        include_layout.addLayout(include_top_row)
+        include_layout.addLayout(include_grid)
+
+        advanced_state_box = QFrame()
+        advanced_state_box.setVisible(False)
+        advanced_state_layout = QVBoxLayout(advanced_state_box)
+        advanced_state_layout.addLayout(setting_row)
+        advanced_state_layout.addWidget(rule_box)
+        advanced_state_layout.addWidget(privacy_box)
+        advanced_state_layout.addWidget(include_box)
+
         button_row = QHBoxLayout()
         start_btn = QPushButton("开始扫描")
         start_btn.setObjectName("PrimaryButton")
@@ -139,6 +254,7 @@ class ScanConfigPage(QWidget):
         self.cancel_btn = QPushButton("取消")
         self.cancel_btn.clicked.connect(self.cancel_requested.emit)
         clear_btn = QPushButton("清空结果")
+        clear_btn.clicked.connect(self.clear_requested.emit)
 
         button_row.addWidget(start_btn)
         button_row.addWidget(self.cancel_btn)
@@ -148,11 +264,13 @@ class ScanConfigPage(QWidget):
         layout.addLayout(title_row)
         layout.addWidget(desc)
         layout.addLayout(path_row)
+        layout.addWidget(mode_box)
         layout.addWidget(option_box)
-        layout.addLayout(setting_row)
-        layout.addWidget(rule_box)
+        layout.addWidget(advanced_state_box)
         layout.addLayout(button_row)
         layout.addStretch()
+        scroll.setWidget(content)
+        root_layout.addWidget(scroll)
 
     def choose_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "选择扫描目录")
@@ -163,10 +281,9 @@ class ScanConfigPage(QWidget):
             self.folder_selected.emit(folder)
 
     def get_scan_options(self) -> ScanOptions:
-        threshold_text = self.big_file_input.text().strip()
-        threshold_mb = int(threshold_text) if threshold_text else 100
-        path_length_text = self.path_length_input.text().strip()
-        path_length_threshold = int(path_length_text) if path_length_text else 180
+        threshold_mb = parse_positive_int(self.big_file_input.text(), 100, "大文件阈值")
+        path_length_threshold = parse_positive_int(self.path_length_input.text(), 180, "路径过长阈值")
+        skip_large_files_mb = parse_positive_int(self.skip_large_files_input.text(), 0, "跳过大文件阈值")
         return ScanOptions(
             root_path=Path(self.path_input.text().strip()),
             recursive=self.option_checks["recursive"].isChecked(),
@@ -184,6 +301,18 @@ class ScanConfigPage(QWidget):
             ignored_dirs=tuple(_lines(self.ignored_dirs_edit.toPlainText())),
             suspicious_extensions=tuple(_extension_lines(self.suspicious_extensions_edit.toPlainText())),
             whitelisted_extensions=tuple(_extension_lines(self.whitelisted_extensions_edit.toPlainText())),
+            skip_hidden_files=self.skip_hidden_files_check.isChecked(),
+            skip_large_files_mb=skip_large_files_mb,
+            skip_dirs=tuple(_lines(self.skip_dirs_edit.toPlainText())),
+            skip_file_names=tuple(_lines(self.skip_file_names_edit.toPlainText())),
+            skip_extensions=tuple(_extension_lines(self.skip_extensions_edit.toPlainText())),
+            skip_path_keywords=tuple(_lines(self.skip_path_keywords_edit.toPlainText())),
+            include_only_matched=self.include_only_radio.isChecked(),
+            include_conflict_policy=include_conflict_policy_value(self.include_conflict_select.currentText()),
+            include_extensions=tuple(_extension_lines(self.include_extensions_edit.toPlainText())),
+            include_name_keywords=tuple(_lines(self.include_name_keywords_edit.toPlainText())),
+            include_path_keywords=tuple(_lines(self.include_path_keywords_edit.toPlainText())),
+            include_file_types=tuple(_lines(self.include_file_types_edit.toPlainText())),
         )
 
     def apply_settings(self, settings: AppSettings):
@@ -204,6 +333,20 @@ class ScanConfigPage(QWidget):
         self.ignored_dirs_edit.setPlainText("\n".join(settings.ignored_dirs))
         self.suspicious_extensions_edit.setPlainText("\n".join(settings.suspicious_extensions))
         self.whitelisted_extensions_edit.setPlainText("\n".join(settings.whitelisted_extensions))
+        self.skip_hidden_files_check.setChecked(settings.skip_hidden_files)
+        self.skip_large_files_input.setText(str(settings.skip_large_files_mb))
+        self.skip_dirs_edit.setPlainText("\n".join(settings.skip_dirs))
+        self.skip_file_names_edit.setPlainText("\n".join(settings.skip_file_names))
+        self.skip_extensions_edit.setPlainText("\n".join(settings.skip_extensions))
+        self.skip_path_keywords_edit.setPlainText("\n".join(settings.skip_path_keywords))
+        self.include_only_matched_check.setChecked(settings.include_only_matched)
+        self.include_only_radio.setChecked(settings.include_only_matched)
+        self.scan_all_radio.setChecked(not settings.include_only_matched)
+        self.include_conflict_select.setCurrentText(include_conflict_policy_label(settings.include_conflict_policy))
+        self.include_extensions_edit.setPlainText("\n".join(settings.include_extensions))
+        self.include_name_keywords_edit.setPlainText("\n".join(settings.include_name_keywords))
+        self.include_path_keywords_edit.setPlainText("\n".join(settings.include_path_keywords))
+        self.include_file_types_edit.setPlainText("\n".join(settings.include_file_types))
 
 
 class OverviewPage(QWidget):
@@ -224,40 +367,88 @@ class OverviewPage(QWidget):
             ("duplicate_files", "重复文件", "0"),
             ("risk_files", "可疑文件", "0"),
             ("error_count", "扫描错误", "0"),
+            ("skipped_items", "已跳过", "0"),
         ]:
             card = StatCard(title_text, value)
             self.cards[key] = card
             card_layout.addWidget(card)
 
-        panel = QFrame()
-        panel.setObjectName("Panel")
-        panel_layout = QVBoxLayout(panel)
-        panel_layout.setContentsMargins(0, 0, 0, 0)
+        chart_tabs = QTabWidget()
+        chart_tabs.setObjectName("ChartTabs")
 
-        chart_scroll = QScrollArea()
-        chart_scroll.setWidgetResizable(True)
-        chart_scroll.setFrameShape(QFrame.NoFrame)
-        chart_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        summary_tab = QWidget()
+        summary_layout = QGridLayout(summary_tab)
+        summary_layout.setContentsMargins(0, 0, 0, 0)
+        summary_layout.setSpacing(16)
 
-        chart_content = QWidget()
-        chart_content.setMinimumHeight(520)
-        chart_layout = QGridLayout(chart_content)
-        chart_layout.setContentsMargins(12, 12, 12, 12)
-        chart_layout.setSpacing(14)
+        risk_tab = QWidget()
+        risk_layout = QGridLayout(risk_tab)
+        risk_layout.setContentsMargins(0, 0, 0, 0)
+        risk_layout.setSpacing(16)
 
-        self.type_chart = BarChart("文件类型分布", accent_color="#2F80ED")
-        self.risk_chart = BarChart("风险等级分布", accent_color="#F97316")
+        space_tab = QWidget()
+        space_scroll = QScrollArea()
+        space_scroll.setWidgetResizable(True)
+        space_scroll.setFrameShape(QFrame.NoFrame)
+        space_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        space_content = QWidget()
+        space_layout = QGridLayout(space_content)
+        space_layout.setContentsMargins(0, 0, 0, 0)
+        space_layout.setSpacing(16)
+        space_scroll.setWidget(space_content)
+        space_tab_layout = QVBoxLayout(space_tab)
+        space_tab_layout.setContentsMargins(0, 0, 0, 0)
+        space_tab_layout.addWidget(space_scroll)
+
+        time_tab = QWidget()
+        time_layout = QGridLayout(time_tab)
+        time_layout.setContentsMargins(0, 0, 0, 0)
+        time_layout.setSpacing(16)
+
+        self.type_chart = DonutChart("文件类型分布")
+        self.risk_chart = DonutChart("风险等级分布")
         self.directory_chart = BarChart("目录占用 Top 10", format_size, "#22C55E")
-        chart_layout.addWidget(self.type_chart, 0, 0)
-        chart_layout.addWidget(self.risk_chart, 0, 1)
-        chart_layout.addWidget(self.directory_chart, 1, 0, 1, 2)
+        self.extension_chart = BarChart("扩展名 Top 10", accent_color="#A855F7")
+        self.size_chart = DonutChart("文件大小分布")
+        self.risk_reason_chart = BarChart("风险原因 Top 10", accent_color="#EF4444")
+        self.skip_reason_chart = BarChart("跳过原因", accent_color="#F59E0B")
+        self.largest_files_chart = BarChart("最大文件 Top 10", format_size, "#38BDF8")
+        self.duplicate_group_chart = BarChart("重复文件组 Top 10", format_size, "#FB7185")
+        self.modified_time_chart = BarChart("修改时间分布", accent_color="#84CC16")
 
-        chart_scroll.setWidget(chart_content)
-        panel_layout.addWidget(chart_scroll)
+        for chart in [
+            self.directory_chart,
+            self.extension_chart,
+            self.risk_reason_chart,
+            self.skip_reason_chart,
+            self.largest_files_chart,
+            self.duplicate_group_chart,
+            self.modified_time_chart,
+        ]:
+            chart.setMinimumHeight(240)
+
+        summary_layout.addWidget(self.type_chart, 0, 0)
+        summary_layout.addWidget(self.risk_chart, 0, 1)
+        summary_layout.addWidget(self.size_chart, 1, 0)
+        summary_layout.addWidget(self.extension_chart, 1, 1)
+
+        risk_layout.addWidget(self.risk_reason_chart, 0, 0)
+        risk_layout.addWidget(self.skip_reason_chart, 0, 1)
+
+        space_layout.addWidget(self.directory_chart, 0, 0, 1, 2)
+        space_layout.addWidget(self.largest_files_chart, 1, 0)
+        space_layout.addWidget(self.duplicate_group_chart, 1, 1)
+
+        time_layout.addWidget(self.modified_time_chart, 0, 0)
+
+        chart_tabs.addTab(summary_tab, "总览")
+        chart_tabs.addTab(risk_tab, "风险")
+        chart_tabs.addTab(space_tab, "空间")
+        chart_tabs.addTab(time_tab, "时间")
 
         layout.addWidget(title)
         layout.addLayout(card_layout)
-        layout.addWidget(panel, 1)
+        layout.addWidget(chart_tabs, 1)
 
     def update_result(self, result):
         summary = result.summary
@@ -266,9 +457,35 @@ class OverviewPage(QWidget):
         self.cards["duplicate_files"].set_value(f"{summary.duplicate_files:,}")
         self.cards["risk_files"].set_value(f"{summary.risk_files:,}")
         self.cards["error_count"].set_value(f"{summary.error_count:,}")
+        self.cards["skipped_items"].set_value(f"{summary.skipped_files + summary.skipped_dirs:,}")
         self.type_chart.set_items(build_file_type_distribution(result.records))
         self.risk_chart.set_items(build_risk_distribution(summary.risk_counts), summary.total_files)
         self.directory_chart.set_items(build_directory_size_distribution(result.records))
+        self.extension_chart.set_items(build_extension_distribution(result.records))
+        self.size_chart.set_items(build_size_distribution(result.records), summary.total_files)
+        self.risk_reason_chart.set_items(build_risk_reason_distribution(result.records))
+        self.skip_reason_chart.set_items(build_skip_reason_distribution(summary.skip_reasons))
+        self.largest_files_chart.set_items(build_largest_files_distribution(result.records))
+        self.duplicate_group_chart.set_items(build_duplicate_group_distribution(result.duplicate_groups))
+        self.modified_time_chart.set_items(build_modified_time_distribution(result.records), summary.total_files)
+
+    def clear_result(self):
+        self.cards["total_files"].set_value("0")
+        self.cards["total_size"].set_value("0 B")
+        self.cards["duplicate_files"].set_value("0")
+        self.cards["risk_files"].set_value("0")
+        self.cards["error_count"].set_value("0")
+        self.cards["skipped_items"].set_value("0")
+        self.type_chart.set_items([])
+        self.risk_chart.set_items([])
+        self.directory_chart.set_items([])
+        self.extension_chart.set_items([])
+        self.size_chart.set_items([])
+        self.risk_reason_chart.set_items([])
+        self.skip_reason_chart.set_items([])
+        self.largest_files_chart.set_items([])
+        self.duplicate_group_chart.set_items([])
+        self.modified_time_chart.set_items([])
 
 
 class FileDetailPage(QWidget):
@@ -338,6 +555,13 @@ class FileDetailPage(QWidget):
         self.records = result.records
         self.visible_limit = INITIAL_TABLE_ROWS
         self.apply_filters()
+
+    def clear_result(self):
+        self.records = []
+        self.visible_limit = INITIAL_TABLE_ROWS
+        self.table.setRowCount(0)
+        self.summary_label.setText("显示文件：0 / 0")
+        self.load_more_btn.setVisible(False)
 
     def apply_filters(self):
         records = self.filtered_records()
@@ -449,6 +673,15 @@ class DuplicatePage(QWidget):
                 self.rows.append((group_index, group, record))
         self.populate_table(result)
 
+    def clear_result(self):
+        self.rows = []
+        self.visible_limit = INITIAL_TABLE_ROWS
+        if hasattr(self, "last_result"):
+            del self.last_result
+        self.table.setRowCount(0)
+        self.summary_label.setText("重复文件组：0，可节省空间：0 B")
+        self.load_more_btn.setVisible(False)
+
     def populate_table(self, result):
         visible_rows = self.rows[:self.visible_limit]
         self.table.setRowCount(len(visible_rows))
@@ -524,6 +757,15 @@ class RiskPage(QWidget):
         self.records.sort(key=lambda record: risk_sort_key(record.risk_level))
         self.populate_table(result)
 
+    def clear_result(self):
+        self.records = []
+        self.visible_limit = INITIAL_TABLE_ROWS
+        if hasattr(self, "last_result"):
+            del self.last_result
+        self.table.setRowCount(0)
+        self.summary_label.setText("可疑文件：0")
+        self.load_more_btn.setVisible(False)
+
     def populate_table(self, result):
         visible_records = self.records[:self.visible_limit]
         self.table.setRowCount(len(visible_records))
@@ -559,6 +801,66 @@ class RiskPage(QWidget):
         self.populate_table(self.last_result)
 
 
+class ErrorPage(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.errors = []
+        self.visible_limit = INITIAL_TABLE_ROWS
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(12)
+
+        title = QLabel("扫描错误")
+        title.setObjectName("PageTitle")
+
+        self.summary_label = QLabel("扫描错误：0")
+        self.summary_label.setObjectName("PageDesc")
+
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels(["路径", "错误原因"])
+        configure_path_table(self.table, 0)
+        self.table.setColumnWidth(1, 520)
+        self.table.setSortingEnabled(False)
+
+        self.load_more_btn = QPushButton("查看更多 1000 行")
+        self.load_more_btn.clicked.connect(self.load_more)
+
+        layout.addWidget(title)
+        layout.addWidget(self.summary_label)
+        layout.addWidget(self.table, 1)
+        layout.addWidget(self.load_more_btn)
+
+    def update_result(self, result):
+        self.errors = result.errors
+        self.visible_limit = INITIAL_TABLE_ROWS
+        self.populate_table()
+
+    def clear_result(self):
+        self.errors = []
+        self.visible_limit = INITIAL_TABLE_ROWS
+        self.table.setRowCount(0)
+        self.summary_label.setText("扫描错误：0")
+        self.load_more_btn.setVisible(False)
+
+    def populate_table(self):
+        visible_errors = self.errors[:self.visible_limit]
+        self.table.setRowCount(len(visible_errors))
+        for row_index, error in enumerate(visible_errors):
+            row_values = [str(error.path), error.message]
+            for column_index, value in enumerate(row_values):
+                item = QTableWidgetItem(value)
+                item.setToolTip(value)
+                self.table.setItem(row_index, column_index, item)
+
+        limited_text = f"，当前表格显示前 {len(visible_errors):,} 行" if len(self.errors) > self.visible_limit else ""
+        self.summary_label.setText(f"扫描错误：{len(self.errors):,}{limited_text}")
+        self.load_more_btn.setVisible(len(self.errors) > self.visible_limit)
+
+    def load_more(self):
+        self.visible_limit += LOAD_MORE_ROWS
+        self.populate_table()
+
+
 class ExportPage(QWidget):
     export_requested = Signal()
 
@@ -574,22 +876,12 @@ class ExportPage(QWidget):
         panel = QFrame()
         panel.setObjectName("Panel")
         panel_layout = QVBoxLayout(panel)
-
-        checks = [
-            "导出 CSV 数据文件",
-            "生成 HTML 图表报告",
-            "包含扫描概览",
-            "包含文件明细",
-            "包含重复文件",
-            "包含可疑文件",
-            "包含目录统计",
-            "包含扫描错误",
-        ]
-
-        for text in checks:
-            checkbox = QCheckBox(text)
-            checkbox.setChecked(True)
-            panel_layout.addWidget(checkbox)
+        desc = QLabel(
+            "生成完整报告包：summary.csv、files.csv、duplicates.csv、risks.csv、errors.csv 和 report.html。"
+        )
+        desc.setObjectName("PageDesc")
+        desc.setWordWrap(True)
+        panel_layout.addWidget(desc)
 
         export_btn = QPushButton("生成报告")
         export_btn.setObjectName("PrimaryButton")
@@ -615,10 +907,29 @@ class SettingsPage(QWidget):
         self.ignored_dirs_edit = QTextEdit()
         self.suspicious_extensions_edit = QTextEdit()
         self.whitelisted_extensions_edit = QTextEdit()
+        self.skip_hidden_files_check = QCheckBox("跳过隐藏文件")
+        self.skip_large_files_input = QLineEdit()
+        self.skip_dirs_edit = QTextEdit()
+        self.skip_file_names_edit = QTextEdit()
+        self.skip_extensions_edit = QTextEdit()
+        self.skip_path_keywords_edit = QTextEdit()
+        self.include_only_matched_check = QCheckBox("只扫描匹配规则的文件")
+        self.include_conflict_select = QComboBox()
+        self.include_extensions_edit = QTextEdit()
+        self.include_name_keywords_edit = QTextEdit()
+        self.include_path_keywords_edit = QTextEdit()
+        self.include_file_types_edit = QTextEdit()
+        self.export_full_paths_check = QCheckBox("报告导出完整路径")
         self._setup_ui()
 
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(18)
 
@@ -645,6 +956,11 @@ class SettingsPage(QWidget):
         self.hash_select.addItems(["SHA256", "MD5", "SHA1(不推荐)"])
         self.big_file_input.setFixedWidth(100)
         self.path_length_input.setFixedWidth(100)
+        self.skip_large_files_input.setFixedWidth(100)
+        int_validator = QIntValidator(0, 2147483647, self)
+        self.big_file_input.setValidator(int_validator)
+        self.path_length_input.setValidator(int_validator)
+        self.skip_large_files_input.setValidator(int_validator)
         scan_layout.addWidget(QLabel("大文件阈值："), 0, 0)
         scan_layout.addWidget(self.big_file_input, 0, 1)
         scan_layout.addWidget(QLabel("MB"), 0, 2)
@@ -682,6 +998,67 @@ class SettingsPage(QWidget):
         rule_layout.addWidget(self.suspicious_extensions_edit, 1, 1)
         rule_layout.addWidget(self.whitelisted_extensions_edit, 1, 2)
 
+        privacy_box = QFrame()
+        privacy_box.setObjectName("Panel")
+        privacy_layout = QVBoxLayout(privacy_box)
+        privacy_layout.setSpacing(12)
+        privacy_top_row = QHBoxLayout()
+        privacy_grid = QGridLayout()
+        privacy_grid.setHorizontalSpacing(16)
+        privacy_grid.setVerticalSpacing(8)
+        for edit in [self.skip_dirs_edit, self.skip_file_names_edit, self.skip_extensions_edit, self.skip_path_keywords_edit]:
+            edit.setFixedHeight(96)
+        privacy_top_row.addWidget(self.skip_hidden_files_check)
+        privacy_top_row.addSpacing(24)
+        privacy_top_row.addWidget(QLabel("跳过大于等于："))
+        privacy_top_row.addWidget(self.skip_large_files_input)
+        privacy_top_row.addWidget(QLabel("MB 的文件（0 表示不跳过）"))
+        privacy_top_row.addSpacing(24)
+        privacy_top_row.addWidget(self.export_full_paths_check)
+        privacy_top_row.addStretch()
+        privacy_grid.addWidget(QLabel("跳过目录名（每行一个）："), 0, 0)
+        privacy_grid.addWidget(QLabel("跳过文件名（每行一个）："), 0, 1)
+        privacy_grid.addWidget(self.skip_dirs_edit, 1, 0)
+        privacy_grid.addWidget(self.skip_file_names_edit, 1, 1)
+        privacy_grid.addWidget(QLabel("跳过扩展名（每行一个）："), 2, 0)
+        privacy_grid.addWidget(QLabel("跳过路径关键词（每行一个）："), 2, 1)
+        privacy_grid.addWidget(self.skip_extensions_edit, 3, 0)
+        privacy_grid.addWidget(self.skip_path_keywords_edit, 3, 1)
+        privacy_layout.addLayout(privacy_top_row)
+        privacy_layout.addLayout(privacy_grid)
+
+        include_box = QFrame()
+        include_box.setObjectName("Panel")
+        include_layout = QVBoxLayout(include_box)
+        include_layout.setSpacing(12)
+        include_top_row = QHBoxLayout()
+        include_grid = QGridLayout()
+        include_grid.setHorizontalSpacing(16)
+        include_grid.setVerticalSpacing(8)
+        self.include_conflict_select.addItems(["跳过规则优先", "只扫描规则优先"])
+        for edit in [
+            self.include_extensions_edit,
+            self.include_name_keywords_edit,
+            self.include_path_keywords_edit,
+            self.include_file_types_edit,
+        ]:
+            edit.setFixedHeight(96)
+        include_top_row.addWidget(self.include_only_matched_check)
+        include_top_row.addSpacing(24)
+        include_top_row.addWidget(QLabel("规则冲突时："))
+        include_top_row.addWidget(self.include_conflict_select)
+        include_top_row.addStretch()
+        include_grid.addWidget(QLabel("只扫描扩展名（每行一个）："), 0, 0)
+        include_grid.addWidget(QLabel("只扫描文件名关键词（每行一个）："), 0, 1)
+        include_grid.addWidget(self.include_extensions_edit, 1, 0)
+        include_grid.addWidget(self.include_name_keywords_edit, 1, 1)
+        include_grid.addWidget(QLabel("只扫描路径关键词（每行一个）："), 2, 0)
+        include_grid.addWidget(QLabel("只扫描文件类型（每行一个）："), 2, 1)
+        include_grid.addWidget(self.include_path_keywords_edit, 3, 0)
+        include_grid.addWidget(self.include_file_types_edit, 3, 1)
+        include_layout.addLayout(include_top_row)
+        include_layout.addLayout(include_grid)
+
         button_row = QHBoxLayout()
         save_btn = QPushButton("保存设置")
         save_btn.setObjectName("PrimaryButton")
@@ -695,8 +1072,13 @@ class SettingsPage(QWidget):
         layout.addWidget(title)
         layout.addWidget(path_box)
         layout.addWidget(scan_box)
-        layout.addWidget(rule_box, 1)
+        layout.addWidget(rule_box)
+        layout.addWidget(privacy_box)
+        layout.addWidget(include_box)
         layout.addLayout(button_row)
+        layout.addStretch()
+        scroll.setWidget(content)
+        root_layout.addWidget(scroll)
 
     def choose_dir(self, line_edit: QLineEdit, title: str):
         folder = QFileDialog.getExistingDirectory(self, title, line_edit.text())
@@ -717,6 +1099,19 @@ class SettingsPage(QWidget):
         self.ignored_dirs_edit.setPlainText("\n".join(settings.ignored_dirs))
         self.suspicious_extensions_edit.setPlainText("\n".join(settings.suspicious_extensions))
         self.whitelisted_extensions_edit.setPlainText("\n".join(settings.whitelisted_extensions))
+        self.skip_hidden_files_check.setChecked(settings.skip_hidden_files)
+        self.skip_large_files_input.setText(str(settings.skip_large_files_mb))
+        self.skip_dirs_edit.setPlainText("\n".join(settings.skip_dirs))
+        self.skip_file_names_edit.setPlainText("\n".join(settings.skip_file_names))
+        self.skip_extensions_edit.setPlainText("\n".join(settings.skip_extensions))
+        self.skip_path_keywords_edit.setPlainText("\n".join(settings.skip_path_keywords))
+        self.include_only_matched_check.setChecked(settings.include_only_matched)
+        self.include_conflict_select.setCurrentText(include_conflict_policy_label(settings.include_conflict_policy))
+        self.include_extensions_edit.setPlainText("\n".join(settings.include_extensions))
+        self.include_name_keywords_edit.setPlainText("\n".join(settings.include_name_keywords))
+        self.include_path_keywords_edit.setPlainText("\n".join(settings.include_path_keywords))
+        self.include_file_types_edit.setPlainText("\n".join(settings.include_file_types))
+        self.export_full_paths_check.setChecked(settings.export_full_paths)
 
     def current_settings(self) -> AppSettings:
         return AppSettings(
@@ -725,8 +1120,8 @@ class SettingsPage(QWidget):
             recursive=self.option_checks["recursive"].isChecked(),
             calculate_hash=self.option_checks["calculate_hash"].isChecked(),
             hash_algorithm=self.hash_select.currentText(),
-            big_file_threshold_mb=int(self.big_file_input.text().strip() or "100"),
-            path_length_threshold=int(self.path_length_input.text().strip() or "180"),
+            big_file_threshold_mb=parse_positive_int(self.big_file_input.text(), 100, "大文件阈值"),
+            path_length_threshold=parse_positive_int(self.path_length_input.text(), 180, "路径过长阈值"),
             detect_suspicious_extensions=self.option_checks["detect_suspicious_extensions"].isChecked(),
             detect_double_extensions=self.option_checks["detect_double_extensions"].isChecked(),
             detect_hidden_files=self.option_checks["detect_hidden_files"].isChecked(),
@@ -737,10 +1132,30 @@ class SettingsPage(QWidget):
             ignored_dirs=_lines(self.ignored_dirs_edit.toPlainText()),
             suspicious_extensions=_extension_lines(self.suspicious_extensions_edit.toPlainText()),
             whitelisted_extensions=_extension_lines(self.whitelisted_extensions_edit.toPlainText()),
+            skip_hidden_files=self.skip_hidden_files_check.isChecked(),
+            skip_large_files_mb=parse_positive_int(self.skip_large_files_input.text(), 0, "跳过大文件阈值"),
+            skip_dirs=_lines(self.skip_dirs_edit.toPlainText()),
+            skip_file_names=_lines(self.skip_file_names_edit.toPlainText()),
+            skip_extensions=_extension_lines(self.skip_extensions_edit.toPlainText()),
+            skip_path_keywords=_lines(self.skip_path_keywords_edit.toPlainText()),
+            include_only_matched=self.include_only_matched_check.isChecked(),
+            include_conflict_policy=include_conflict_policy_value(self.include_conflict_select.currentText()),
+            include_extensions=_extension_lines(self.include_extensions_edit.toPlainText()),
+            include_name_keywords=_lines(self.include_name_keywords_edit.toPlainText()),
+            include_path_keywords=_lines(self.include_path_keywords_edit.toPlainText()),
+            include_file_types=_lines(self.include_file_types_edit.toPlainText()),
+            export_full_paths=self.export_full_paths_check.isChecked(),
         )
 
     def save_current_settings(self):
-        self.settings_saved.emit(self.current_settings())
+        try:
+            settings = self.current_settings()
+        except ValueError as error:
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.warning(self, "设置错误", str(error))
+            return
+        self.settings_saved.emit(settings)
 
 
 def setup_simple_page(page: QWidget, title_text: str, body_text: str):
@@ -789,6 +1204,27 @@ def _extension_lines(text: str) -> list[str]:
     return extensions
 
 
+def parse_positive_int(text: str, default: int, field_name: str) -> int:
+    value_text = text.strip()
+    if not value_text:
+        return default
+    try:
+        value = int(value_text)
+    except ValueError as error:
+        raise ValueError(f"{field_name}必须填写数字。") from error
+    if value < 0:
+        raise ValueError(f"{field_name}不能小于 0。")
+    return value
+
+
+def include_conflict_policy_value(text: str) -> str:
+    return "include_wins" if text == "只扫描规则优先" else "skip_wins"
+
+
+def include_conflict_policy_label(value: str) -> str:
+    return "只扫描规则优先" if value == "include_wins" else "跳过规则优先"
+
+
 def format_size(size: int) -> str:
     value = float(size)
     for unit in ["B", "KB", "MB", "GB", "TB"]:
@@ -816,10 +1252,13 @@ def format_risk_level(level: str) -> str:
 def format_risk_reasons(reasons: list[str]) -> str:
     names = {
         "suspicious extension": "可疑扩展名",
+        "script file": "脚本文件",
         "double extension": "双扩展名伪装",
         "hidden file": "隐藏文件",
         "empty file": "空文件",
         "big file": "大文件",
+        "large file without extension": "无扩展名大文件",
+        "temporary file": "临时/备份文件",
         "time anomaly": "时间异常",
         "long path": "路径过长",
     }
@@ -922,6 +1361,98 @@ def build_risk_distribution(risk_counts: dict[str, int]) -> list[tuple[str, int]
     ]
 
 
+def build_extension_distribution(records) -> list[tuple[str, int]]:
+    counts = {}
+    for record in records:
+        extension = record.extension or "[无扩展名]"
+        counts[extension] = counts.get(extension, 0) + 1
+    return sorted(counts.items(), key=lambda item: item[1], reverse=True)[:10]
+
+
+def build_size_distribution(records) -> list[tuple[str, int]]:
+    buckets = {
+        "空文件": 0,
+        "< 1 MB": 0,
+        "1-10 MB": 0,
+        "10-100 MB": 0,
+        "100 MB-1 GB": 0,
+        ">= 1 GB": 0,
+    }
+    for record in records:
+        size = record.size
+        if size == 0:
+            buckets["空文件"] += 1
+        elif size < 1024 * 1024:
+            buckets["< 1 MB"] += 1
+        elif size < 10 * 1024 * 1024:
+            buckets["1-10 MB"] += 1
+        elif size < 100 * 1024 * 1024:
+            buckets["10-100 MB"] += 1
+        elif size < 1024 * 1024 * 1024:
+            buckets["100 MB-1 GB"] += 1
+        else:
+            buckets[">= 1 GB"] += 1
+    return [(label, count) for label, count in buckets.items() if count]
+
+
+def build_risk_reason_distribution(records) -> list[tuple[str, int]]:
+    counts = {}
+    for record in records:
+        for reason in record.risk_reasons:
+            label = format_risk_reasons([reason])
+            counts[label] = counts.get(label, 0) + 1
+    return sorted(counts.items(), key=lambda item: item[1], reverse=True)[:10]
+
+
+def build_skip_reason_distribution(skip_reasons: dict[str, int]) -> list[tuple[str, int]]:
+    return [
+        (format_skip_reason(reason), count)
+        for reason, count in sorted(skip_reasons.items(), key=lambda item: item[1], reverse=True)
+    ]
+
+
+def build_largest_files_distribution(records) -> list[tuple[str, int]]:
+    largest_records = sorted(records, key=lambda record: record.size, reverse=True)[:10]
+    return [(record.name, record.size) for record in largest_records]
+
+
+def build_duplicate_group_distribution(duplicate_groups) -> list[tuple[str, int]]:
+    rows = []
+    for index, group in enumerate(duplicate_groups[:10], start=1):
+        label = f"第 {index} 组（{len(group.files)} 个）"
+        rows.append((label, group.wasted_size))
+    return rows
+
+
+def build_modified_time_distribution(records) -> list[tuple[str, int]]:
+    from datetime import datetime, timedelta
+
+    now = datetime.now()
+    buckets = {
+        "今天": 0,
+        "7 天内": 0,
+        "30 天内": 0,
+        "1 年内": 0,
+        "更早": 0,
+        "未来时间": 0,
+    }
+    for record in records:
+        modified_at = record.modified_at
+        if modified_at > now:
+            buckets["未来时间"] += 1
+        elif modified_at.date() == now.date():
+            buckets["今天"] += 1
+        elif modified_at >= now - timedelta(days=7):
+            buckets["7 天内"] += 1
+        elif modified_at >= now - timedelta(days=30):
+            buckets["30 天内"] += 1
+        elif modified_at >= now - timedelta(days=365):
+            buckets["1 年内"] += 1
+        else:
+            buckets["更早"] += 1
+    return [(label, count) for label, count in buckets.items() if count]
+
+
 def build_directory_size_distribution(records) -> list[tuple[str, int]]:
     sizes = {}
     for record in records:
@@ -929,3 +1460,17 @@ def build_directory_size_distribution(records) -> list[tuple[str, int]]:
         sizes[directory] = sizes.get(directory, 0) + record.size
     top_items = sorted(sizes.items(), key=lambda item: item[1], reverse=True)[:10]
     return [(path, size) for path, size in top_items]
+
+
+def format_skip_reason(reason: str) -> str:
+    names = {
+        "skip dir name": "目录名",
+        "skip dir path keyword": "目录路径关键词",
+        "skip file name": "文件名",
+        "skip path keyword": "路径关键词",
+        "skip extension": "扩展名",
+        "skip hidden file": "隐藏文件",
+        "skip large file": "大文件",
+        "skip include unmatched": "未匹配只扫描规则",
+    }
+    return names.get(reason, reason)

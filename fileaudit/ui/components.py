@@ -1,5 +1,6 @@
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtCore import QRectF
+from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -70,8 +71,9 @@ class Sidebar(QFrame):
             ("文件明细", 2),
             ("重复文件", 3),
             ("可疑文件", 4),
-            ("报告导出", 5),
-            ("设置", 6),
+            ("扫描错误", 5),
+            ("分析+导出", 6),
+            ("设置", 7),
         ]
 
         for text, index in buttons:
@@ -178,6 +180,103 @@ class BarChart(QWidget):
             percent = f" ({value / self.total:.0%})" if self.total else ""
             painter.drawText(bar_right + 8, y + 15, f"{self.value_formatter(value)}{percent}")
             y += row_height
+
+
+class DonutChart(QWidget):
+    COLORS = [
+        QColor("#2F80ED"),
+        QColor("#F97316"),
+        QColor("#22C55E"),
+        QColor("#A855F7"),
+        QColor("#06B6D4"),
+        QColor("#EF4444"),
+        QColor("#F59E0B"),
+        QColor("#94A3B8"),
+    ]
+
+    def __init__(self, title: str):
+        super().__init__()
+        self.title = title
+        self.items = []
+        self.total = 0
+        self.setMinimumHeight(260)
+
+    def set_items(self, items: list[tuple[str, int]], total: int | None = None):
+        self.items = [(str(label), int(value)) for label, value in items if value]
+        self.total = total if total is not None else sum(value for _, value in self.items)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        text_color = QColor("#E5E7EB")
+        muted_color = QColor("#9CA3AF")
+        border = QColor("#374151")
+        panel_bg = QColor("#182230")
+        hole_color = QColor("#111827")
+
+        painter.setPen(QPen(border))
+        painter.setBrush(panel_bg)
+        painter.drawRoundedRect(self.rect().adjusted(1, 1, -2, -2), 8, 8)
+
+        painter.setPen(QPen(text_color))
+        painter.drawText(12, 24, self.title)
+
+        if not self.items or not self.total:
+            painter.setPen(QPen(muted_color))
+            painter.drawText(12, 58, "暂无数据")
+            return
+
+        size = min(self.height() - 82, self.width() // 2 - 30, 150)
+        size = max(96, size)
+        center_y = 48 + size // 2
+        chart_rect = QRectF(20, 46, size, size)
+        start_angle = 90 * 16
+
+        for index, (_, value) in enumerate(self.items[:8]):
+            span_angle = int(-360 * 16 * value / self.total)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(self.COLORS[index % len(self.COLORS)])
+            painter.drawPie(chart_rect, start_angle, span_angle)
+            start_angle += span_angle
+
+        hole_size = size * 0.58
+        hole_rect = QRectF(
+            chart_rect.center().x() - hole_size / 2,
+            chart_rect.center().y() - hole_size / 2,
+            hole_size,
+            hole_size,
+        )
+        painter.setBrush(hole_color)
+        painter.drawEllipse(hole_rect)
+
+        painter.setPen(QPen(text_color))
+        font = QFont(painter.font())
+        font.setBold(True)
+        font.setPointSize(12)
+        painter.setFont(font)
+        painter.drawText(chart_rect, Qt.AlignCenter, f"{self.total:,}")
+
+        font.setBold(False)
+        font.setPointSize(9)
+        painter.setFont(font)
+
+        legend_x = 36 + size
+        legend_y = max(52, center_y - 70)
+        for index, (label, value) in enumerate(self.items[:8]):
+            y = legend_y + index * 22
+            if y > self.height() - 16:
+                break
+            color = self.COLORS[index % len(self.COLORS)]
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(color)
+            painter.drawRoundedRect(legend_x, y - 10, 10, 10, 3, 3)
+            painter.setPen(QPen(text_color))
+            label_text = label if len(label) <= 16 else f"{label[:15]}..."
+            painter.drawText(legend_x + 16, y, label_text)
+            painter.setPen(QPen(muted_color))
+            percent = value / self.total
+            painter.drawText(legend_x + 150, y, f"{value:,} ({percent:.0%})")
 
 
 class BottomBar(QFrame):

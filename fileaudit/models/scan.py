@@ -22,6 +22,18 @@ class ScanOptions:
     detect_long_paths: bool = True
     ignored_dirs: tuple[str, ...] = (".git", "__pycache__", "node_modules", ".venv", "venv")
     whitelisted_extensions: tuple[str, ...] = ()
+    skip_hidden_files: bool = False
+    skip_large_files_mb: int = 0
+    skip_dirs: tuple[str, ...] = ()
+    skip_file_names: tuple[str, ...] = ()
+    skip_extensions: tuple[str, ...] = ()
+    skip_path_keywords: tuple[str, ...] = ()
+    include_only_matched: bool = False
+    include_conflict_policy: str = "skip_wins"
+    include_extensions: tuple[str, ...] = ()
+    include_name_keywords: tuple[str, ...] = ()
+    include_path_keywords: tuple[str, ...] = ()
+    include_file_types: tuple[str, ...] = ()
     suspicious_extensions: tuple[str, ...] = (
         ".bat",
         ".cmd",
@@ -88,6 +100,9 @@ class ScanSummary:
     duplicate_wasted_size: int = 0
     risk_files: int = 0
     error_count: int = 0
+    skipped_files: int = 0
+    skipped_dirs: int = 0
+    skip_reasons: dict[str, int] = field(default_factory=dict)
     extension_counts: dict[str, int] = field(default_factory=dict)
     risk_counts: dict[str, int] = field(default_factory=dict)
 
