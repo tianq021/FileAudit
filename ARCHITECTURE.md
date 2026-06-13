@@ -36,6 +36,7 @@ FileAudit/
 ├─ TEMP_ISSUES.md             # 当前问题和后续优化清单
 ├─ 草图.txt                   # 产品草图和页面规划
 ├─ README.md                  # 项目说明
+├─ 发布说明.md                # 对外分享说明，含普通用户启动方式
 ├─ CHANGELOG.md               # 更新记录
 └─ 修改指南.md                # 二次修改入口说明
 ```
