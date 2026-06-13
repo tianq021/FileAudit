@@ -141,6 +141,10 @@ FileAudit/
 
 开发环境下设置保存到项目根目录 `settings.json`，仓库中保留一份默认配置；打包成 exe 后保存到 exe 同级目录 `settings.json`。程序不再读取 `%USERPROFILE%\.fileaudit\settings.json`，避免旧用户目录配置影响扫描范围。
 
+设置页展示项目内相对路径 `settings.json`，悬停提示实际完整路径；读写逻辑仍以 `SETTINGS_PATH` 的绝对路径为准。设置页提供“另存为”导出当前配置，以及“添加”从其他 JSON 配置载入到页面，保存后写回当前 `SETTINGS_PATH`。
+
+扫描规则里的 `skip_path_keywords` 和 `include_path_keywords` 会对完整路径字符串做大小写不敏感的包含匹配，不按项目相对路径匹配。
+
 ### `fileaudit/ui/pages.py`
 
 集中放置页面类：

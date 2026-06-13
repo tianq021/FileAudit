@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSize, Qt, Signal
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QRadioButton,
     QScrollArea,
@@ -24,7 +26,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fileaudit.config import SETTINGS_PATH, AppSettings, default_settings
+from fileaudit.config import (
+    SETTINGS_PATH,
+    AppSettings,
+    default_settings,
+    load_settings,
+    save_settings,
+    settings_path_label,
+)
 from fileaudit.config.validation import validate_detection_skip_conflicts
 from fileaudit.ui.components import BarChart, DonutChart, StatCard
 from fileaudit.models import ScanOptions
@@ -1118,11 +1127,19 @@ class SettingsPage(QWidget):
         path_layout.addWidget(QLabel("默认报告目录："), 1, 0)
         path_layout.addWidget(self.report_dir_input, 1, 1)
         path_layout.addWidget(report_btn, 1, 2)
-        settings_path_label = QLabel(f"设置文件位置：{SETTINGS_PATH}")
-        settings_path_label.setObjectName("PageDesc")
-        settings_path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        settings_path_label.setToolTip(str(SETTINGS_PATH))
-        path_layout.addWidget(settings_path_label, 2, 0, 1, 3)
+        settings_file_label = QLabel(f"设置文件：{settings_path_label()}（项目内 JSON）")
+        settings_file_label.setObjectName("PageDesc")
+        settings_file_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        settings_file_label.setToolTip(f"实际读写完整路径：{SETTINGS_PATH}")
+        save_as_btn = QPushButton("另存为")
+        import_btn = QPushButton("添加")
+        save_as_btn.setToolTip("把当前页面设置保存成另一份 JSON 文件。")
+        import_btn.setToolTip("从已有 JSON 设置文件载入到当前页面。")
+        save_as_btn.clicked.connect(self.save_settings_as)
+        import_btn.clicked.connect(self.import_settings_file)
+        path_layout.addWidget(settings_file_label, 2, 0, 1, 1)
+        path_layout.addWidget(save_as_btn, 2, 1)
+        path_layout.addWidget(import_btn, 2, 2)
 
         scan_box = QFrame()
         scan_box.setObjectName("Panel")
@@ -1463,11 +1480,61 @@ class SettingsPage(QWidget):
         try:
             settings = self.current_settings()
         except ValueError as error:
-            from PySide6.QtWidgets import QMessageBox
-
             QMessageBox.warning(self, "设置错误", str(error))
             return
         self.settings_saved.emit(settings)
+
+    def save_settings_as(self):
+        try:
+            settings = self.current_settings()
+        except ValueError as error:
+            QMessageBox.warning(self, "设置错误", str(error))
+            return
+
+        path_text, _ = QFileDialog.getSaveFileName(
+            self,
+            "设置文件另存为",
+            str(SETTINGS_PATH),
+            "JSON 设置文件 (*.json);;所有文件 (*)",
+        )
+        if not path_text:
+            return
+
+        target_path = Path(path_text)
+        if target_path.suffix.lower() != ".json":
+            target_path = target_path.with_suffix(".json")
+        try:
+            save_settings(settings, target_path)
+        except OSError as error:
+            QMessageBox.warning(self, "另存为失败", str(error))
+            return
+        QMessageBox.information(self, "设置", f"设置已另存为：\n{target_path}")
+
+    def import_settings_file(self):
+        path_text, _ = QFileDialog.getOpenFileName(
+            self,
+            "添加设置文件",
+            str(SETTINGS_PATH.parent),
+            "JSON 设置文件 (*.json);;所有文件 (*)",
+        )
+        if not path_text:
+            return
+
+        settings_path = Path(path_text)
+        if not settings_path.exists():
+            QMessageBox.warning(self, "添加失败", "设置文件不存在。")
+            return
+        try:
+            raw_settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            QMessageBox.warning(self, "添加失败", f"设置文件不是有效 JSON：\n{error}")
+            return
+        if not isinstance(raw_settings, dict):
+            QMessageBox.warning(self, "添加失败", "设置文件内容必须是 JSON 对象。")
+            return
+        settings = load_settings(settings_path)
+        self.apply_settings(settings)
+        QMessageBox.information(self, "设置", "设置文件已添加到当前页面，点击“保存设置”后会写入项目内 settings.json。")
 
 
 def setup_simple_page(page: QWidget, title_text: str, body_text: str):

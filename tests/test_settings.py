@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fileaudit.config.settings import SETTINGS_PATH, AppSettings, load_settings, save_settings
+from fileaudit.config.settings import SETTINGS_PATH, AppSettings, load_settings, save_settings, settings_path_label
 
 
 class SettingsTests(unittest.TestCase):
@@ -10,6 +10,9 @@ class SettingsTests(unittest.TestCase):
         project_root = Path(__file__).resolve().parents[1]
 
         self.assertEqual(SETTINGS_PATH, project_root / "settings.json")
+
+    def test_settings_path_label_uses_project_relative_path(self):
+        self.assertEqual(settings_path_label(), "settings.json")
 
     def test_save_and_load_settings_roundtrip(self):
         with tempfile.TemporaryDirectory() as temp_dir:

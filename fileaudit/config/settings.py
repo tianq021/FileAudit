@@ -17,6 +17,13 @@ def _project_settings_path() -> Path:
 SETTINGS_PATH = _project_settings_path()
 
 
+def settings_path_label(path: Path = SETTINGS_PATH) -> str:
+    try:
+        return str(path.relative_to(Path(__file__).resolve().parents[2]))
+    except ValueError:
+        return str(path)
+
+
 @dataclass
 class AppSettings:
     default_scan_dir: str = ""
