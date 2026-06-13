@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from fileaudit.config import AppSettings, default_settings
+from fileaudit.config import SETTINGS_PATH, AppSettings, default_settings
 from fileaudit.config.validation import validate_detection_skip_conflicts
 from fileaudit.ui.components import BarChart, DonutChart, StatCard
 from fileaudit.models import ScanOptions
@@ -105,22 +105,23 @@ CONTROL_TOOLTIPS = {
     "report_dir_input": "导出报告时默认使用的目录。",
     "scan_all_radio": "扫描目录下所有未被跳过规则排除的文件。",
     "include_only_radio": "只扫描命中“只扫描规则”的文件，跳过规则仍然优先。",
+    "single_file_type_radio": "只扫描所选常用后缀名的文件，适合快速定位文档、图片、压缩包等某一类文件。",
     "hidden_file_mode_select": (
-        "标记风险：扫描隐藏文件并标记风险。\n"
-        "跳过文件：隐藏文件不参与扫描。\n"
-        "忽略：正常扫描隐藏文件，但不因为隐藏属性标记风险。"
+        "扫描并标记风险：隐藏文件会进入结果，并标记为隐藏文件风险。\n"
+        "跳过不扫描：隐藏文件不进入扫描结果，也不会出现在报告中。\n"
+        "扫描但不标记：隐藏文件照常进入结果，但不因为隐藏属性被标记风险。"
     ),
     "big_file_mode_select": (
-        "标记风险：超过阈值的文件会被标记为大文件风险。\n"
-        "跳过文件：超过阈值的文件不参与扫描，可减少耗时。\n"
-        "关闭：不检测大文件风险。"
+        "扫描并标记风险：超过阈值的文件会进入结果，并标记为大文件风险。\n"
+        "跳过不扫描：超过阈值的文件不进入扫描结果，可减少耗时。\n"
+        "扫描但不标记：超过阈值的文件照常进入结果，但不因为大小被标记风险。"
     ),
     "big_file_input": "大文件判断阈值，单位 MB。会配合“大文件处理”模式使用。",
     "path_length_input": "完整文件路径超过该字符数时，会在开启路径过长检测后标记风险。",
     "file_timeout_input": "单个文件处理允许的最长秒数。填写 0 表示不限制。",
     "modified_time_months_input": "概览统计中用于区分最近文件和较早文件的月份范围。",
     "hash_select": "重复文件检测使用的 Hash 算法。SHA256 更稳妥，MD5/SHA1 更快但不推荐用于安全判断。",
-    "ignored_dirs_edit": "目录名命中后会忽略该目录。每行一个名称，例如 node_modules。",
+    "ignored_dirs_edit": "目录名命中后会跳过整个目录，不扫描其中任何文件。每行一个名称，例如 node_modules。",
     "suspicious_extensions_edit": "会被标记为可疑的扩展名。每行一个，可写 exe 或 .exe。",
     "whitelisted_extensions_edit": "白名单扩展名不会按可疑扩展名标记。每行一个，可写 txt 或 .txt。",
     "skip_dirs_edit": "目录名命中后跳过整个目录。每行一个名称，不需要写完整路径。",
@@ -129,11 +130,25 @@ CONTROL_TOOLTIPS = {
     "skip_path_keywords_edit": "完整路径中包含关键词时跳过。每行一个关键词，适合排除缓存或隐私目录。",
     "include_only_matched_check": "启用后只扫描命中下方“只扫描规则”的文件；跳过规则仍然优先。",
     "include_extensions_edit": "只扫描这些扩展名的文件。开启只扫描模式后生效，每行一个。",
+    "custom_suffix_input": "输入一个自定义后缀名，例如 log 或 .sqlite。查询会说明是否属于常用分类，也可以直接加入只扫描扩展名。",
     "include_name_keywords_edit": "文件名包含关键词时才扫描。开启只扫描模式后生效，每行一个。",
     "include_path_keywords_edit": "完整路径包含关键词时才扫描。开启只扫描模式后生效，每行一个。",
     "include_file_types_edit": "只扫描这些文件类型。开启只扫描模式后生效，每行一个。",
     "export_full_paths_check": "导出报告时包含完整文件路径。关闭后可减少敏感路径泄露。",
 }
+
+MODE_MARK_RISK = "扫描并标记风险"
+MODE_SKIP_SCAN = "跳过不扫描"
+MODE_SCAN_ONLY = "扫描但不标记"
+
+COMMON_SCAN_SUFFIXES = (
+    ("文档", (".doc", ".docx", ".pdf", ".rtf", ".txt"), "常见办公文档、PDF 和纯文本文件。"),
+    ("表格", (".xls", ".xlsx", ".csv"), "电子表格和逗号分隔数据文件。"),
+    ("图片", (".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"), "常见图片格式，适合查找照片、截图和素材。"),
+    ("压缩包", (".zip", ".rar", ".7z", ".tar", ".gz"), "压缩归档文件，常用于打包资料或备份。"),
+    ("音视频", (".mp3", ".wav", ".mp4", ".mov", ".avi", ".mkv"), "常见音频和视频媒体文件。"),
+    ("程序/脚本", (".exe", ".msi", ".bat", ".cmd", ".ps1", ".vbs"), "可执行文件、安装包和自动化脚本，安全审计时常重点查看。"),
+)
 
 
 class ScanConfigPage(QWidget):
@@ -166,6 +181,9 @@ class ScanConfigPage(QWidget):
         self.include_file_types_edit = QTextEdit()
         self.scan_all_radio = QRadioButton("全部扫描")
         self.include_only_radio = QRadioButton("只扫描匹配规则")
+        self.single_file_type_radio = QRadioButton("只扫描某类文件")
+        self.common_suffix_box = QFrame()
+        self.common_suffix_checks = {}
         self.rule_status_label = QLabel()
         self.option_checks = {}
         self._setup_ui()
@@ -219,13 +237,32 @@ class ScanConfigPage(QWidget):
         mode_row = QHBoxLayout()
         mode_row.addWidget(self.scan_all_radio)
         mode_row.addWidget(self.include_only_radio)
+        mode_row.addWidget(self.single_file_type_radio)
         mode_row.addStretch()
-        mode_hint = QLabel("默认全部扫描；选择“只扫描匹配规则”时，会使用设置页里的只扫描规则。")
+        mode_hint = QLabel("默认全部扫描；选择“只扫描匹配规则”时，会使用下方只扫描规则；选择“只扫描某类文件”时，可直接勾选常用后缀名。")
         mode_hint.setObjectName("PageDesc")
         mode_hint.setWordWrap(True)
         mode_layout.addWidget(mode_title)
         mode_layout.addLayout(mode_row)
         mode_layout.addWidget(mode_hint)
+
+        self.common_suffix_box.setObjectName("Panel")
+        common_suffix_layout = QVBoxLayout(self.common_suffix_box)
+        common_suffix_layout.setSpacing(10)
+        common_suffix_title = QLabel("常用后缀名")
+        common_suffix_title.setObjectName("PageDesc")
+        common_suffix_grid = QGridLayout()
+        common_suffix_grid.setHorizontalSpacing(16)
+        common_suffix_grid.setVerticalSpacing(8)
+        for index, (label, extensions, explanation) in enumerate(COMMON_SCAN_SUFFIXES):
+            checkbox = QCheckBox(f"{label}（{' '.join(extensions)}）")
+            checkbox.setToolTip(explanation)
+            checkbox.toggled.connect(self.on_common_suffix_changed)
+            self.common_suffix_checks[label] = checkbox
+            common_suffix_grid.addWidget(checkbox, index // 2, index % 2)
+        common_suffix_layout.addWidget(common_suffix_title)
+        common_suffix_layout.addLayout(common_suffix_grid)
+        self.common_suffix_box.setVisible(False)
 
         option_box = QFrame()
         option_box.setObjectName("Panel")
@@ -258,8 +295,8 @@ class ScanConfigPage(QWidget):
         self.path_length_input.setValidator(int_validator)
         self.file_timeout_input.setValidator(int_validator)
         self.hash_select.addItems(["SHA256", "MD5", "SHA1(不推荐)"])
-        self.hidden_file_mode_select.addItems(["标记风险", "跳过文件", "忽略"])
-        self.big_file_mode_select.addItems(["标记风险", "跳过文件", "关闭"])
+        self.hidden_file_mode_select.addItems([MODE_MARK_RISK, MODE_SKIP_SCAN, MODE_SCAN_ONLY])
+        self.big_file_mode_select.addItems([MODE_MARK_RISK, MODE_SKIP_SCAN, MODE_SCAN_ONLY])
 
         setting_row.addWidget(QLabel("隐藏文件处理："))
         setting_row.addWidget(self.hidden_file_mode_select)
@@ -288,7 +325,7 @@ class ScanConfigPage(QWidget):
         rule_layout = QGridLayout(rule_box)
         for edit in [self.ignored_dirs_edit, self.suspicious_extensions_edit, self.whitelisted_extensions_edit]:
             edit.setFixedHeight(88)
-        rule_layout.addWidget(QLabel("忽略目录（每行一个）："), 0, 0)
+        rule_layout.addWidget(QLabel("不扫描目录名（每行一个）："), 0, 0)
         rule_layout.addWidget(QLabel("可疑扩展名（每行一个）："), 0, 1)
         rule_layout.addWidget(QLabel("白名单扩展名（每行一个）："), 0, 2)
         rule_layout.addWidget(self.ignored_dirs_edit, 1, 0)
@@ -374,13 +411,18 @@ class ScanConfigPage(QWidget):
         button_row.addStretch()
 
         apply_control_tooltips(self)
+        self.single_file_type_radio.toggled.connect(self.on_scan_scope_changed)
+        self.include_only_radio.toggled.connect(self.on_scan_scope_changed)
+        self.scan_all_radio.toggled.connect(self.on_scan_scope_changed)
         connect_rule_feedback(self)
+        self.on_scan_scope_changed()
         update_rule_feedback(self)
 
         layout.addLayout(title_row)
         layout.addWidget(desc)
         layout.addLayout(path_row)
         layout.addWidget(mode_box)
+        layout.addWidget(self.common_suffix_box)
         layout.addWidget(option_box)
         layout.addWidget(advanced_state_box)
         layout.addWidget(self.rule_status_label)
@@ -397,16 +439,30 @@ class ScanConfigPage(QWidget):
             self.choose_btn.setToolTip(folder)
             self.folder_selected.emit(folder)
 
+    def on_scan_scope_changed(self, *_args):
+        self.common_suffix_box.setVisible(self.single_file_type_radio.isChecked())
+
+    def on_common_suffix_changed(self, *_args):
+        update_rule_feedback(self)
+
+    def _selected_common_suffix_extensions(self) -> list[str]:
+        selected = []
+        for label, extensions, _explanation in COMMON_SCAN_SUFFIXES:
+            checkbox = self.common_suffix_checks.get(label)
+            if checkbox is not None and checkbox.isChecked():
+                selected.extend(extensions)
+        return selected
+
     def get_scan_options(self) -> ScanOptions:
         threshold_mb = parse_positive_int(self.big_file_input.text(), 100, "大文件阈值")
         path_length_threshold = parse_positive_int(self.path_length_input.text(), 180, "路径过长阈值")
         file_timeout_seconds = parse_positive_int(self.file_timeout_input.text(), 15, "单文件超时")
         hidden_mode = self.hidden_file_mode_select.currentText()
         big_file_mode = self.big_file_mode_select.currentText()
-        detect_hidden_files = hidden_mode == "标记风险"
-        skip_hidden_files = hidden_mode == "跳过文件"
-        detect_big_files = big_file_mode == "标记风险"
-        skip_large_files_mb = threshold_mb if big_file_mode == "跳过文件" else 0
+        detect_hidden_files = hidden_mode == MODE_MARK_RISK
+        skip_hidden_files = hidden_mode == MODE_SKIP_SCAN
+        detect_big_files = big_file_mode == MODE_MARK_RISK
+        skip_large_files_mb = threshold_mb if big_file_mode == MODE_SKIP_SCAN else 0
         ignored_dirs = tuple(_lines(self.ignored_dirs_edit.toPlainText()))
         suspicious_extensions = tuple(_extension_lines(self.suspicious_extensions_edit.toPlainText()))
         whitelisted_extensions = tuple(_extension_lines(self.whitelisted_extensions_edit.toPlainText()))
@@ -414,11 +470,18 @@ class ScanConfigPage(QWidget):
         skip_file_names = tuple(_lines(self.skip_file_names_edit.toPlainText()))
         skip_extensions = tuple(_extension_lines(self.skip_extensions_edit.toPlainText()))
         skip_path_keywords = tuple(_lines(self.skip_path_keywords_edit.toPlainText()))
-        include_extensions = tuple(_extension_lines(self.include_extensions_edit.toPlainText()))
+        include_extensions = tuple(
+            dict.fromkeys(
+                [
+                    *_extension_lines(self.include_extensions_edit.toPlainText()),
+                    *self._selected_common_suffix_extensions(),
+                ]
+            )
+        )
         include_name_keywords = tuple(_lines(self.include_name_keywords_edit.toPlainText()))
         include_path_keywords = tuple(_lines(self.include_path_keywords_edit.toPlainText()))
         include_file_types = tuple(_lines(self.include_file_types_edit.toPlainText()))
-        include_only_matched = self.include_only_radio.isChecked()
+        include_only_matched = self.include_only_radio.isChecked() or self.single_file_type_radio.isChecked()
         validate_detection_skip_conflicts(
             detect_suspicious_extensions=self.option_checks["detect_suspicious_extensions"].isChecked(),
             detect_double_extensions=self.option_checks["detect_double_extensions"].isChecked(),
@@ -471,6 +534,35 @@ class ScanConfigPage(QWidget):
             include_file_types=include_file_types,
         )
 
+    def validate_rule_status(self) -> None:
+        threshold_mb = parse_positive_int(self.big_file_input.text(), 100, "大文件阈值")
+        hidden_mode = self.hidden_file_mode_select.currentText()
+        big_file_mode = self.big_file_mode_select.currentText()
+        detect_hidden_files = hidden_mode == MODE_MARK_RISK
+        skip_hidden_files = hidden_mode == MODE_SKIP_SCAN
+        detect_big_files = big_file_mode == MODE_MARK_RISK
+        skip_large_files_mb = threshold_mb if big_file_mode == MODE_SKIP_SCAN else 0
+        validate_detection_skip_conflicts(
+            detect_suspicious_extensions=self.option_checks["detect_suspicious_extensions"].isChecked(),
+            detect_double_extensions=self.option_checks["detect_double_extensions"].isChecked(),
+            detect_hidden_files=detect_hidden_files,
+            skip_hidden_files=skip_hidden_files,
+            detect_big_files=detect_big_files,
+            big_file_threshold_mb=threshold_mb,
+            skip_large_files_mb=skip_large_files_mb,
+            suspicious_extensions=tuple(_extension_lines(self.suspicious_extensions_edit.toPlainText())),
+            whitelisted_extensions=tuple(_extension_lines(self.whitelisted_extensions_edit.toPlainText())),
+            skip_extensions=tuple(_extension_lines(self.skip_extensions_edit.toPlainText())),
+            ignored_dirs=tuple(_lines(self.ignored_dirs_edit.toPlainText())),
+            skip_dirs=tuple(_lines(self.skip_dirs_edit.toPlainText())),
+            skip_path_keywords=tuple(_lines(self.skip_path_keywords_edit.toPlainText())),
+            include_only_matched=self.include_only_matched_check.isChecked(),
+            include_extensions=tuple(_extension_lines(self.include_extensions_edit.toPlainText())),
+            include_name_keywords=tuple(_lines(self.include_name_keywords_edit.toPlainText())),
+            include_path_keywords=tuple(_lines(self.include_path_keywords_edit.toPlainText())),
+            include_file_types=tuple(_lines(self.include_file_types_edit.toPlainText())),
+        )
+
     def apply_settings(self, settings: AppSettings):
         self.path_input.setText(settings.default_scan_dir)
         self.path_input.setToolTip(settings.default_scan_dir)
@@ -498,10 +590,12 @@ class ScanConfigPage(QWidget):
         self.include_only_matched_check.setChecked(settings.include_only_matched)
         self.include_only_radio.setChecked(settings.include_only_matched)
         self.scan_all_radio.setChecked(not settings.include_only_matched)
+        self.single_file_type_radio.setChecked(False)
         self.include_extensions_edit.setPlainText("\n".join(settings.include_extensions))
         self.include_name_keywords_edit.setPlainText("\n".join(settings.include_name_keywords))
         self.include_path_keywords_edit.setPlainText("\n".join(settings.include_path_keywords))
         self.include_file_types_edit.setPlainText("\n".join(settings.include_file_types))
+        self.on_scan_scope_changed()
         update_rule_feedback(self)
 
 
@@ -988,6 +1082,8 @@ class SettingsPage(QWidget):
         self.skip_path_keywords_edit = QTextEdit()
         self.include_only_matched_check = QCheckBox("只扫描匹配规则的文件")
         self.include_extensions_edit = QTextEdit()
+        self.custom_suffix_input = QLineEdit()
+        self.custom_suffix_result_label = QLabel()
         self.include_name_keywords_edit = QTextEdit()
         self.include_path_keywords_edit = QTextEdit()
         self.include_file_types_edit = QTextEdit()
@@ -1022,6 +1118,11 @@ class SettingsPage(QWidget):
         path_layout.addWidget(QLabel("默认报告目录："), 1, 0)
         path_layout.addWidget(self.report_dir_input, 1, 1)
         path_layout.addWidget(report_btn, 1, 2)
+        settings_path_label = QLabel(f"设置文件位置：{SETTINGS_PATH}")
+        settings_path_label.setObjectName("PageDesc")
+        settings_path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        settings_path_label.setToolTip(str(SETTINGS_PATH))
+        path_layout.addWidget(settings_path_label, 2, 0, 1, 3)
 
         scan_box = QFrame()
         scan_box.setObjectName("Panel")
@@ -1041,8 +1142,8 @@ class SettingsPage(QWidget):
         self.path_length_input.setValidator(int_validator)
         self.file_timeout_input.setValidator(int_validator)
         self.modified_time_months_input.setValidator(month_validator)
-        self.hidden_file_mode_select.addItems(["标记风险", "跳过文件", "忽略"])
-        self.big_file_mode_select.addItems(["标记风险", "跳过文件", "关闭"])
+        self.hidden_file_mode_select.addItems([MODE_MARK_RISK, MODE_SKIP_SCAN, MODE_SCAN_ONLY])
+        self.big_file_mode_select.addItems([MODE_MARK_RISK, MODE_SKIP_SCAN, MODE_SCAN_ONLY])
 
         def add_setting(row: QHBoxLayout, label_text: str, widget: QWidget, suffix_text: str = ""):
             row.addWidget(QLabel(label_text))
@@ -1098,7 +1199,7 @@ class SettingsPage(QWidget):
         rule_layout = QGridLayout(rule_box)
         for edit in [self.ignored_dirs_edit, self.suspicious_extensions_edit, self.whitelisted_extensions_edit]:
             edit.setMinimumHeight(150)
-        rule_layout.addWidget(QLabel("忽略目录（每行一个）："), 0, 0)
+        rule_layout.addWidget(QLabel("不扫描目录名（每行一个）："), 0, 0)
         rule_layout.addWidget(QLabel("可疑扩展名（每行一个）："), 0, 1)
         rule_layout.addWidget(QLabel("白名单扩展名（每行一个）："), 0, 2)
         rule_layout.addWidget(self.ignored_dirs_edit, 1, 0)
@@ -1145,6 +1246,19 @@ class SettingsPage(QWidget):
             edit.setFixedHeight(96)
         include_top_row.addWidget(self.include_only_matched_check)
         include_top_row.addStretch()
+        custom_suffix_row = QHBoxLayout()
+        custom_suffix_row.setSpacing(10)
+        self.custom_suffix_input.setPlaceholderText("输入后缀名，例如 log 或 .sqlite")
+        self.custom_suffix_result_label.setObjectName("PageDesc")
+        self.custom_suffix_result_label.setWordWrap(True)
+        query_suffix_btn = QPushButton("查询后缀名")
+        add_suffix_btn = QPushButton("加入只扫描")
+        query_suffix_btn.clicked.connect(self.query_custom_suffix)
+        add_suffix_btn.clicked.connect(self.add_custom_suffix)
+        custom_suffix_row.addWidget(QLabel("自定义后缀名："))
+        custom_suffix_row.addWidget(self.custom_suffix_input, 1)
+        custom_suffix_row.addWidget(query_suffix_btn)
+        custom_suffix_row.addWidget(add_suffix_btn)
         include_grid.addWidget(QLabel("只扫描扩展名（每行一个）："), 0, 0)
         include_grid.addWidget(QLabel("只扫描文件名关键词（每行一个）："), 0, 1)
         include_grid.addWidget(self.include_extensions_edit, 1, 0)
@@ -1154,6 +1268,8 @@ class SettingsPage(QWidget):
         include_grid.addWidget(self.include_path_keywords_edit, 3, 0)
         include_grid.addWidget(self.include_file_types_edit, 3, 1)
         include_layout.addLayout(include_top_row)
+        include_layout.addLayout(custom_suffix_row)
+        include_layout.addWidget(self.custom_suffix_result_label)
         include_layout.addLayout(include_grid)
 
         button_row = QHBoxLayout()
@@ -1215,8 +1331,55 @@ class SettingsPage(QWidget):
         self.include_name_keywords_edit.setPlainText("\n".join(settings.include_name_keywords))
         self.include_path_keywords_edit.setPlainText("\n".join(settings.include_path_keywords))
         self.include_file_types_edit.setPlainText("\n".join(settings.include_file_types))
+        self.custom_suffix_input.clear()
+        self.custom_suffix_result_label.clear()
         self.export_full_paths_check.setChecked(settings.export_full_paths)
         update_rule_feedback(self)
+
+    def query_custom_suffix(self):
+        try:
+            extension = normalize_custom_extension(self.custom_suffix_input.text())
+        except ValueError as error:
+            self.custom_suffix_result_label.setText(str(error))
+            self.custom_suffix_result_label.setToolTip(str(error))
+            return
+
+        description = describe_extension(extension)
+        conflict_text = self._suffix_conflict_text(extension)
+        result_text = f"{extension}：{description}"
+        if conflict_text:
+            result_text = f"{result_text}\n{conflict_text}"
+        self.custom_suffix_result_label.setText(result_text)
+        self.custom_suffix_result_label.setToolTip(result_text)
+
+    def add_custom_suffix(self):
+        try:
+            extension = normalize_custom_extension(self.custom_suffix_input.text())
+        except ValueError as error:
+            self.custom_suffix_result_label.setText(str(error))
+            self.custom_suffix_result_label.setToolTip(str(error))
+            return
+
+        existing_extensions = _extension_lines(self.include_extensions_edit.toPlainText())
+        if extension not in existing_extensions:
+            existing_extensions.append(extension)
+            self.include_extensions_edit.setPlainText("\n".join(existing_extensions))
+        self.include_only_matched_check.setChecked(True)
+        self.query_custom_suffix()
+        update_rule_feedback(self)
+
+    def _suffix_conflict_text(self, extension: str) -> str:
+        skip_extensions = set(_extension_lines(self.skip_extensions_edit.toPlainText()))
+        suspicious_extensions = set(_extension_lines(self.suspicious_extensions_edit.toPlainText()))
+        whitelisted_extensions = set(_extension_lines(self.whitelisted_extensions_edit.toPlainText()))
+        messages = []
+        if extension in skip_extensions:
+            messages.append("冲突：该后缀也在跳过扩展名中，开启只扫描时会被跳过规则挡掉。")
+        if extension in suspicious_extensions:
+            messages.append("提示：该后缀也在可疑扩展名中，扫描后可能会被标记风险。")
+        if extension in whitelisted_extensions:
+            messages.append("提示：该后缀也在白名单扩展名中，不会按可疑扩展名触发风险。")
+        return "\n".join(messages)
 
     def current_settings(self) -> AppSettings:
         big_file_threshold_mb = parse_positive_int(self.big_file_input.text(), 100, "大文件阈值")
@@ -1225,10 +1388,10 @@ class SettingsPage(QWidget):
         modified_time_months = parse_min_int(self.modified_time_months_input.text(), 3, "修改时间分类月份", 1)
         hidden_mode = self.hidden_file_mode_select.currentText()
         big_file_mode = self.big_file_mode_select.currentText()
-        detect_hidden_files = hidden_mode == "标记风险"
-        skip_hidden_files = hidden_mode == "跳过文件"
-        detect_big_files = big_file_mode == "标记风险"
-        skip_large_files_mb = big_file_threshold_mb if big_file_mode == "跳过文件" else 0
+        detect_hidden_files = hidden_mode == MODE_MARK_RISK
+        skip_hidden_files = hidden_mode == MODE_SKIP_SCAN
+        detect_big_files = big_file_mode == MODE_MARK_RISK
+        skip_large_files_mb = big_file_threshold_mb if big_file_mode == MODE_SKIP_SCAN else 0
         ignored_dirs = _lines(self.ignored_dirs_edit.toPlainText())
         suspicious_extensions = _extension_lines(self.suspicious_extensions_edit.toPlainText())
         whitelisted_extensions = _extension_lines(self.whitelisted_extensions_edit.toPlainText())
@@ -1394,11 +1557,32 @@ def _lines(text: str) -> list[str]:
 def _extension_lines(text: str) -> list[str]:
     extensions = []
     for line in _lines(text):
-        extension = line.lower()
-        if not extension.startswith("."):
-            extension = f".{extension}"
-        extensions.append(extension)
+        extensions.append(normalize_custom_extension(line))
     return extensions
+
+
+def normalize_custom_extension(text: str) -> str:
+    extension = text.strip().lower()
+    if not extension:
+        raise ValueError("请先输入后缀名，例如 log 或 .log。")
+    if extension.startswith("*."):
+        extension = extension[1:]
+    if not extension.startswith("."):
+        extension = f".{extension}"
+    if len(extension) == 1:
+        raise ValueError("后缀名不能只有点号，请输入类似 .log 的格式。")
+    if any(char.isspace() for char in extension):
+        raise ValueError("后缀名不能包含空格，请每次只查询一个后缀名。")
+    if any(char in extension for char in "\\/:*?\"<>|"):
+        raise ValueError("后缀名不能包含路径或通配符字符。")
+    return extension
+
+
+def describe_extension(extension: str) -> str:
+    for label, extensions, explanation in COMMON_SCAN_SUFFIXES:
+        if extension in extensions:
+            return f"属于常用“{label}”后缀。{explanation}"
+    return "未在常用后缀分类中；仍可加入只扫描扩展名，扫描时会按该后缀精确匹配。"
 
 
 def parse_positive_int(text: str, default: int, field_name: str) -> int:
@@ -1423,18 +1607,18 @@ def parse_min_int(text: str, default: int, field_name: str, minimum: int) -> int
 
 def hidden_file_mode_label(settings: AppSettings) -> str:
     if settings.skip_hidden_files:
-        return "跳过文件"
+        return MODE_SKIP_SCAN
     if settings.detect_hidden_files:
-        return "标记风险"
-    return "忽略"
+        return MODE_MARK_RISK
+    return MODE_SCAN_ONLY
 
 
 def big_file_mode_label(settings: AppSettings) -> str:
     if settings.skip_large_files_mb > 0:
-        return "跳过文件"
+        return MODE_SKIP_SCAN
     if settings.detect_big_files and settings.big_file_threshold_mb > 0:
-        return "标记风险"
-    return "关闭"
+        return MODE_MARK_RISK
+    return MODE_SCAN_ONLY
 
 
 def big_file_threshold_value(settings: AppSettings) -> int:
@@ -1493,10 +1677,13 @@ def connect_rule_feedback(page: QWidget):
         if widget is not None:
             widget.textChanged.connect(refresh)
 
-    for name in ("include_only_matched_check", "scan_all_radio", "include_only_radio"):
+    for name in ("include_only_matched_check", "scan_all_radio", "include_only_radio", "single_file_type_radio"):
         widget = getattr(page, name, None)
         if widget is not None:
             widget.toggled.connect(refresh)
+
+    for checkbox in getattr(page, "common_suffix_checks", {}).values():
+        checkbox.toggled.connect(refresh)
 
 
 def update_rule_feedback(page: QWidget):
@@ -1505,7 +1692,9 @@ def update_rule_feedback(page: QWidget):
         return
 
     try:
-        if hasattr(page, "current_settings"):
+        if hasattr(page, "validate_rule_status"):
+            page.validate_rule_status()
+        elif hasattr(page, "current_settings"):
             page.current_settings()
         else:
             page.get_scan_options()

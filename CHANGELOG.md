@@ -2,6 +2,7 @@
 
 ## 2026-06-12
 
+- 设置文件固定到项目根目录 `settings.json`，并在仓库中保留默认配置；打包后使用 exe 同级目录 `settings.json`，不再读取 `%USERPROFILE%\.fileaudit\settings.json`。
 - 新增清空扫描结果功能：扫描配置页的“清空结果”现在会清空概览、文件明细、重复文件、可疑文件和扫描错误，并重置顶部、侧边栏和底部状态。
 - 新增扫描错误页，独立展示扫描过程中捕获到的路径和错误原因。
 - 新增隐私/跳过规则：
@@ -64,6 +65,7 @@
 - 文件明细、重复文件、可疑文件和扫描错误页改用 `QTableView + QAbstractTableModel`，移除“查看更多”分批灌表，降低大结果集 UI 控件开销。
 - 可疑文件页新增“说明”和“建议”列，风险原因现在会给出可读解释和处理建议。
 - QSS 表格样式同步覆盖 `QTableView`。
+- 新增 PyInstaller 单文件打包配置 `FileAudit.spec`、`build_exe.ps1` 和 `build_exe_python312.ps1`，可生成无需安装 Python/PySide6 的 `dist\FileAudit.exe`。
 
 ## 2026-06-11
 
@@ -83,7 +85,7 @@
 - 优化滚动条样式，提高横向/纵向滚动条可见性。
 - 新增 CSV 数据包和 HTML 图表报告导出。
 - 新增设置页，支持默认目录、报告目录、阈值、Hash 算法、检测开关、忽略目录、可疑扩展名和白名单扩展名。
-- 新增设置持久化，保存到 `%USERPROFILE%\.fileaudit\settings.json`。
+- 新增设置持久化，开发环境保存到项目根目录 `settings.json`，打包后保存到 exe 同级目录。
 - 修正 `.gitignore`，只忽略根目录 `/reports/`，避免误忽略源码目录 `fileaudit/reports/`。
 - 修复 Hash 阶段看似卡住的问题：底部状态栏现在会显示“正在计算重复文件 Hash”的阶段进度。
 - 修复 Hash 大文件读取时取消不及时的问题：Hash 分块读取过程中也会检查取消请求。

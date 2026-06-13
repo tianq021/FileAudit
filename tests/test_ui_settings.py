@@ -84,6 +84,21 @@ class UiSettingsTests(unittest.TestCase):
 
         self.assertIn("只扫描匹配规则", str(context.exception))
 
+    def test_rejects_include_extension_overlapped_with_skip_extension(self):
+        with self.assertRaises(ValueError) as context:
+            validate_detection_skip_conflicts(
+                detect_hidden_files=False,
+                skip_hidden_files=False,
+                detect_big_files=False,
+                big_file_threshold_mb=50,
+                skip_large_files_mb=0,
+                include_only_matched=True,
+                include_extensions=(".log", ".pdf"),
+                skip_extensions=(".log",),
+            )
+
+        self.assertIn(".log", str(context.exception))
+
     def test_rejects_include_path_inside_skipped_directory(self):
         with self.assertRaises(ValueError) as context:
             validate_detection_skip_conflicts(

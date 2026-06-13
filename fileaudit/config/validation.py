@@ -50,6 +50,14 @@ def validate_detection_skip_conflicts(
             f"{_format_items(skipped_suspicious)}。"
         )
 
+    included_extensions = _normalized_set(include_extensions)
+    skipped_included = included_extensions & skipped_extensions
+    if include_only_matched and skipped_included:
+        conflicts.append(
+            "只扫描扩展名和跳过扩展名不能重复；跳过规则会优先拦截这些文件："
+            f"{_format_items(skipped_included)}。"
+        )
+
     if detect_hidden_files and skip_hidden_files:
         conflicts.append("不能同时开启“检测隐藏文件”和“跳过隐藏文件”，否则隐藏文件会先被跳过，无法被标记为风险。")
     if detect_big_files and skip_large_files_mb > 0 and skip_large_files_mb <= big_file_threshold_mb:

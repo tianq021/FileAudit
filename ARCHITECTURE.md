@@ -139,7 +139,7 @@ FileAudit/
 - 只扫描规则。
 - 报告是否导出完整路径。
 
-设置保存到 `%USERPROFILE%\.fileaudit\settings.json`。
+开发环境下设置保存到项目根目录 `settings.json`，仓库中保留一份默认配置；打包成 exe 后保存到 exe 同级目录 `settings.json`。程序不再读取 `%USERPROFILE%\.fileaudit\settings.json`，避免旧用户目录配置影响扫描范围。
 
 ### `fileaudit/ui/pages.py`
 

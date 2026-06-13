@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from fileaudit.models import DEFAULT_IGNORED_DIRS, DEFAULT_SKIP_DIRS
 
 
-SETTINGS_PATH = Path.home() / ".fileaudit" / "settings.json"
+def _project_settings_path() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / "settings.json"
+    return Path(__file__).resolve().parents[2] / "settings.json"
+
+
+SETTINGS_PATH = _project_settings_path()
 
 
 @dataclass

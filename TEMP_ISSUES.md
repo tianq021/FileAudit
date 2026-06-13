@@ -5,6 +5,8 @@
 
 ## 1. 当前项目状态
 
+设置文件已经固定为项目根目录 `settings.json`。开发环境读写这份文件；打包后读写 exe 同级目录 `settings.json`。旧的 `%USERPROFILE%\.fileaudit\settings.json` 不再作为配置来源，避免历史“只扫描 .log”等旧规则影响当前扫描。
+
 FileAudit 当前已经完成第一版主体功能，并补上了一批第一版体验问题：
 
 - 能启动 PySide6 桌面窗口。
